@@ -11,7 +11,9 @@ click==8.5.0
 cloudpickle==3.1.2
 colorama==0.4.6
 cryptography==50.0.2
+dnspython==2.9.0
 ecdsa==0.19.2
+email-validator==2.3.0
 et_xmlfile==2.0.0
 fastapi==0.143.2
 h11==0.16.0
