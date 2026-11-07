@@ -8,6 +8,10 @@ from app.core.config import settings
 
 
 def setup_database():
+    if settings.DB_MANAGED or os.environ.get("DB_MANAGED", "").lower() in ["true", "1", "yes"] or "--sin-crear-base" in sys.argv:
+        print("[*] Base de datos gestionada detectada (DB_MANAGED=true). Omitiendo creación de base de datos a nivel superusuario.")
+        return True
+
     host = settings.POSTGRES_HOST
     port = settings.POSTGRES_PORT
     user = settings.POSTGRES_SUPERUSER
@@ -38,24 +42,33 @@ def setup_database():
         else:
             print(f"[*] La base de datos '{target_db}' ya existe.")
 
-        cur.execute("SELECT 1 FROM pg_roles WHERE rolname = 'retailpro_app'")
-        if not cur.fetchone():
-            print("[*] Creando usuario 'retailpro_app'...")
-            cur.execute("CREATE ROLE retailpro_app WITH LOGIN PASSWORD 'retailpro_app_pwd_2026'")
-            print("[+] Usuario 'retailpro_app' creado.")
-        else:
-            print("[*] Usuario 'retailpro_app' ya existe.")
+        try:
+            cur.execute("SELECT 1 FROM pg_roles WHERE rolname = 'retailpro_app'")
+            if not cur.fetchone():
+                print("[*] Creando usuario 'retailpro_app'...")
+                cur.execute("CREATE ROLE retailpro_app WITH LOGIN PASSWORD 'retailpro_app_pwd_2026'")
+                print("[+] Usuario 'retailpro_app' creado.")
+            else:
+                print("[*] Usuario 'retailpro_app' ya existe.")
+        except Exception as e:
+            print(f"[!] Advertencia al crear rol 'retailpro_app': {e}")
 
-        cur.execute("SELECT 1 FROM pg_roles WHERE rolname = 'powerbi_reader'")
-        if not cur.fetchone():
-            print("[*] Creando usuario 'powerbi_reader'...")
-            cur.execute("CREATE ROLE powerbi_reader WITH LOGIN PASSWORD 'powerbi_reader_pwd_2026'")
-            print("[+] Usuario 'powerbi_reader' creado.")
-        else:
-            print("[*] Usuario 'powerbi_reader' ya existe.")
+        try:
+            cur.execute("SELECT 1 FROM pg_roles WHERE rolname = 'powerbi_reader'")
+            if not cur.fetchone():
+                print("[*] Creando usuario 'powerbi_reader'...")
+                cur.execute("CREATE ROLE powerbi_reader WITH LOGIN PASSWORD 'powerbi_reader_pwd_2026'")
+                print("[+] Usuario 'powerbi_reader' creado.")
+            else:
+                print("[*] Usuario 'powerbi_reader' ya existe.")
+        except Exception as e:
+            print(f"[!] Advertencia al crear rol 'powerbi_reader': {e}")
 
-        cur.execute(sql.SQL("GRANT ALL PRIVILEGES ON DATABASE {} TO retailpro_app").format(sql.Identifier(target_db)))
-        cur.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO powerbi_reader").format(sql.Identifier(target_db)))
+        try:
+            cur.execute(sql.SQL("GRANT ALL PRIVILEGES ON DATABASE {} TO retailpro_app").format(sql.Identifier(target_db)))
+            cur.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO powerbi_reader").format(sql.Identifier(target_db)))
+        except Exception as e:
+            print(f"[!] Advertencia al otorgar privilegios en base de datos: {e}")
 
     conn.close()
 

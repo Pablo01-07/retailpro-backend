@@ -33,6 +33,9 @@ from app.services.scheduler import start_scheduler, stop_scheduler, scheduler
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    for sub in ["", "modelos", "cargas", "config", "reportes", "entrada"]:
+        p = os.path.join(settings.STORAGE_DIR, sub) if sub else settings.STORAGE_DIR
+        os.makedirs(p, exist_ok=True)
     if os.environ.get("ENVIRONMENT") != "testing":
         start_scheduler()
         set_scheduler_instance(scheduler)

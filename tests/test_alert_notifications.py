@@ -414,3 +414,28 @@ def test_plantilla_ordenamiento_y_frase_apertura_correo():
         {"prioridad": "MEDIA"}, {"prioridad": "BAJA"}
     ])
     assert frase_solo_prev == "Se identificaron 2 alerta(s): 2 preventiva(s) a vigilar."
+
+
+def test_alertas_sin_smtp_se_omiten_sin_error(client, admin_token, alert_notif_seed, db_session):
+    al_creadas = AlertService.sincronizar_alertas(db=db_session, notificar=False)
+    assert al_creadas > 0
+
+    with patch("app.services.email_service.EmailService.is_smtp_configured", return_value=False):
+        with patch("smtplib.SMTP") as mock_smtp:
+            resp = client.post(
+                "/api/v1/notificaciones/resumen-alertas",
+                headers={"Authorization": f"Bearer {admin_token}"}
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["enviado"] is False
+            assert "incompleta o ausente" in data["message"]
+            mock_smtp.assert_not_called()
+
+            db_session.query(Alerta).delete()
+            db_session.commit()
+
+            al_nuevas = AlertService.sincronizar_alertas(db=db_session, notificar=True)
+            assert al_nuevas > 0
+            mock_smtp.assert_not_called()
+

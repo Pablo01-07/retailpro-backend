@@ -227,3 +227,24 @@ def test_auditoria_y_logs_no_contienen_tokens_ni_contrasenas(client, db_session)
         assert token_signature not in detalle_str, "La firma del token fue encontrada en auditoría"
         assert nueva_pass not in detalle_str, "La contraseña en texto plano fue encontrada en auditoría"
         assert "clave" not in (log.detalle or {}) or log.detalle["clave"] != nueva_pass
+
+
+def test_recuperar_sin_smtp_responde_503(client):
+    with patch("app.services.email_service.EmailService.is_smtp_configured", return_value=False):
+        with patch("smtplib.SMTP") as mock_smtp:
+            resp = client.post(
+                "/api/v1/auth/recuperar",
+                json={"correo": "admin@retailpro.com"}
+            )
+            assert resp.status_code == 503
+            assert resp.json()["detail"] == "El envío de correos no está disponible en este momento. Comunícate con el administrador."
+            mock_smtp.assert_not_called()
+
+            resp_alias = client.post(
+                "/api/v1/auth/password-recovery",
+                json={"correo": "admin@retailpro.com"}
+            )
+            assert resp_alias.status_code == 503
+            assert resp_alias.json()["detail"] == "El envío de correos no está disponible en este momento. Comunícate con el administrador."
+            mock_smtp.assert_not_called()
+

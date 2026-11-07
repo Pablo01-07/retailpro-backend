@@ -122,13 +122,21 @@ def main():
     parser = argparse.ArgumentParser(description="Inicialización completa del sistema RetailPro")
     parser.add_argument("--db-name", type=str, default=None, help="Nombre de base de datos específica")
     parser.add_argument("--recrear", action="store_true", help="Elimina y vuelve a crear la base de datos limpia desde cero")
+    parser.add_argument("--sin-crear-base", action="store_true", help="Omitir CREATE/DROP DATABASE para bases de datos gestionadas (Supabase)")
     parser.add_argument("--borrar-al-final", action="store_true", help="Elimina la base de datos al finalizar")
     args = parser.parse_args()
 
-    target_db = args.db_name or settings.POSTGRES_DB
-    app_pwd = "retailpro_app_pwd_2026"
-    target_db_url = f"postgresql+psycopg://retailpro_app:{app_pwd}@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{target_db}"
-    target_psycopg_conn = target_db_url.replace("+psycopg", "")
+    is_managed = args.sin_crear_base or settings.DB_MANAGED or os.environ.get("DB_MANAGED", "").lower() in ["true", "1", "yes"]
+
+    if is_managed:
+        target_db_url = settings.DATABASE_URL
+        target_psycopg_conn = target_db_url.replace("+psycopg", "")
+        target_db = target_db_url.split("/")[-1].split("?")[0]
+    else:
+        target_db = args.db_name or settings.POSTGRES_DB
+        app_pwd = "retailpro_app_pwd_2026"
+        target_db_url = f"postgresql+psycopg://retailpro_app:{app_pwd}@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{target_db}"
+        target_psycopg_conn = target_db_url.replace("+psycopg", "")
 
     os.environ["DATABASE_URL"] = target_db_url
     settings.DATABASE_URL = target_db_url
@@ -138,7 +146,9 @@ def main():
     print(f"RETAILPRO - INICIALIZACIÓN COMPLETA DESDE CERO EN '{target_db}'")
     print("=" * 75)
 
-    if args.recrear:
+    if is_managed:
+        print("[*] Base de datos gestionada detectada (DB_MANAGED=true / --sin-crear-base). Se omite CREATE/DROP DATABASE.")
+    elif args.recrear:
         recrear_base_de_datos(target_db)
     else:
         asegurar_base_de_datos(target_db)
@@ -148,6 +158,25 @@ def main():
         f"Aplicando migraciones de Alembic en '{target_db}'",
         env_vars={"DATABASE_URL": target_db_url}
     )
+
+    print("\n[*] Habilitando Row Level Security (RLS) en tablas relacionales...")
+    tablas_rls = [
+        "usuario", "auditoria", "umbral_configuracion", "carga_datos",
+        "producto", "venta_historica", "modelo_version", "pronostico",
+        "alerta", "alembic_version"
+    ]
+    try:
+        with psycopg.connect(target_psycopg_conn) as conn:
+            with conn.cursor() as cur:
+                for t in tablas_rls:
+                    try:
+                        cur.execute(f'ALTER TABLE "{t}" ENABLE ROW LEVEL SECURITY;')
+                    except Exception as e_rls:
+                        print(f"[!] Advertencia al habilitar RLS en '{t}': {e_rls}")
+            conn.commit()
+        print("[+] RLS habilitado exitosamente en las 9 tablas relacionales y alembic_version.")
+    except Exception as e:
+        print(f"[!] Advertencia al configurar RLS: {e}")
 
     print("\n[*] Creando vistas de Power BI (create_views.sql)...")
     sql_path = os.path.join(os.path.dirname(__file__), "create_views.sql")

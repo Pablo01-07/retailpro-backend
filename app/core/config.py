@@ -1,6 +1,6 @@
 import os
 from typing import List, Union
-from pydantic import AnyHttpUrl, field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     DEBUG: bool = True
     API_V1_STR: str = "/api/v1"
+    PORT: int = 8000
 
     SECRET_KEY: str = "retailpro_super_secret_jwt_key_upc_2026_development_only"
     ALGORITHM: str = "HS256"
@@ -23,27 +24,18 @@ class Settings(BaseSettings):
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: int = 5432
     POSTGRES_DB: str = "retailpro_db"
+    DB_MANAGED: bool = False
 
     POWERBI_READER_USER: str = "powerbi_reader"
     POWERBI_READER_PASSWORD: str = "powerbi_reader_pwd_2026"
 
-    BACKEND_CORS_ORIGINS: Union[str, List[str]] = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ]
-
-    @field_validator("BACKEND_CORS_ORIGINS", mode="before")
-    @classmethod
-    def assemble_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:
-        if isinstance(v, str):
-            return [i.strip() for i in v.split(",") if i.strip()]
-        elif isinstance(v, list):
-            return v
-        return []
+    CORS_ORIGINS: Union[str, List[str]] = ""
+    BACKEND_CORS_ORIGINS: Union[str, List[str]] = ""
+    FRONTEND_URL: str = "http://localhost:5173"
 
     STORAGE_DIR: str = "storage"
-    STORAGE_REPORTES_DIR: str = "storage/reportes"
-    STORAGE_ENTRADA_DIR: str = "storage/entrada"
+    STORAGE_REPORTES_DIR: str = ""
+    STORAGE_ENTRADA_DIR: str = ""
     ARTIFACTS_DIR: str = "artifacts"
 
     POWERBI_EMBED_URL: str = ""
@@ -67,7 +59,6 @@ class Settings(BaseSettings):
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
     SMTP_FROM: str = "noreply@retailpro.com"
-    FRONTEND_URL: str = "http://localhost:5173"
     PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 30
     PASSWORD_RECOVERY_MAX_REQUESTS_PER_HOUR: int = 5
 
@@ -77,6 +68,77 @@ class Settings(BaseSettings):
     SEED_ANALYST_PASSWORD: str = ""
     SEED_LOGISTICS_EMAIL: str = "roberto.sanchez@retailpro.com"
     SEED_LOGISTICS_PASSWORD: str = ""
+
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def normalize_database_url(cls, v: str) -> str:
+        if not v:
+            return v
+        url = str(v).strip()
+        if url.startswith("postgres://"):
+            url = "postgresql+psycopg://" + url[len("postgres://"):]
+        elif url.startswith("postgresql+psycopg2://"):
+            url = "postgresql+psycopg://" + url[len("postgresql+psycopg2://"):]
+        elif url.startswith("postgresql://"):
+            url = "postgresql+psycopg://" + url[len("postgresql://"):]
+        return url
+
+    @field_validator("BACKEND_CORS_ORIGINS", mode="before")
+    @classmethod
+    def assemble_backend_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:
+        if isinstance(v, list):
+            return v
+        if isinstance(v, str) and v.strip():
+            return [i.strip() for i in v.split(",") if i.strip()]
+        return []
+
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def assemble_cors_origins_alias(cls, v: Union[str, List[str]]) -> List[str]:
+        if isinstance(v, list):
+            return v
+        if isinstance(v, str) and v.strip():
+            return [i.strip() for i in v.split(",") if i.strip()]
+        return []
+
+    @model_validator(mode="after")
+    def validate_production_and_origins(self):
+        is_prod = self.ENVIRONMENT.lower() == "production"
+        if is_prod:
+            if not self.SECRET_KEY or self.SECRET_KEY == "retailpro_super_secret_jwt_key_upc_2026_development_only":
+                raise RuntimeError("Error de configuración: La clave JWT (SECRET_KEY) es obligatoria en producción y no puede usar el valor por defecto de desarrollo.")
+
+        origins: List[str] = []
+        if isinstance(self.CORS_ORIGINS, list) and self.CORS_ORIGINS:
+            origins.extend(self.CORS_ORIGINS)
+        elif isinstance(self.BACKEND_CORS_ORIGINS, list) and self.BACKEND_CORS_ORIGINS:
+            origins.extend(self.BACKEND_CORS_ORIGINS)
+
+        if is_prod:
+            origins = [o for o in origins if "localhost" not in o and "127.0.0.1" not in o]
+            if not origins:
+                if self.FRONTEND_URL and "localhost" not in self.FRONTEND_URL and "127.0.0.1" not in self.FRONTEND_URL:
+                    origins = [self.FRONTEND_URL.rstrip("/")]
+                else:
+                    origins = []
+        else:
+            if not origins:
+                origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+        if self.FRONTEND_URL and (not is_prod or ("localhost" not in self.FRONTEND_URL and "127.0.0.1" not in self.FRONTEND_URL)):
+            clean_front = self.FRONTEND_URL.rstrip("/")
+            if clean_front not in origins:
+                origins.append(clean_front)
+
+        self.BACKEND_CORS_ORIGINS = origins
+        self.CORS_ORIGINS = origins
+
+        if not self.STORAGE_REPORTES_DIR:
+            self.STORAGE_REPORTES_DIR = os.path.join(self.STORAGE_DIR, "reportes").replace("\\", "/")
+        if not self.STORAGE_ENTRADA_DIR:
+            self.STORAGE_ENTRADA_DIR = os.path.join(self.STORAGE_DIR, "entrada").replace("\\", "/")
+
+        return self
 
     model_config = SettingsConfigDict(
         env_file=".env",

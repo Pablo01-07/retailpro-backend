@@ -100,11 +100,13 @@ def run_seed():
         print("[+] Datos de base de datos sembrados exitosamente.")
 
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        config_dir = os.path.join(base_dir, "storage", "config")
+        storage_base = settings.STORAGE_DIR if os.path.isabs(settings.STORAGE_DIR) else os.path.join(base_dir, settings.STORAGE_DIR)
+        config_dir = os.path.join(storage_base, "config")
         os.makedirs(config_dir, exist_ok=True)
-        os.makedirs(os.path.join(base_dir, "storage", "cargas"), exist_ok=True)
-        os.makedirs(os.path.join(base_dir, "storage", "entrada"), exist_ok=True)
-        os.makedirs(os.path.join(base_dir, "storage", "reportes"), exist_ok=True)
+        os.makedirs(os.path.join(storage_base, "cargas"), exist_ok=True)
+        os.makedirs(os.path.join(storage_base, "entrada"), exist_ok=True)
+        os.makedirs(os.path.join(storage_base, "reportes"), exist_ok=True)
+        os.makedirs(os.path.join(storage_base, "modelos"), exist_ok=True)
 
         procesos_json_path = os.path.join(config_dir, "procesos.json")
         if not os.path.exists(procesos_json_path):

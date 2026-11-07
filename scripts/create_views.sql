@@ -71,7 +71,13 @@ SELECT
 FROM producto p
 GROUP BY p.categoria;
 
-GRANT SELECT ON vw_pronosticos TO powerbi_reader;
-GRANT SELECT ON vw_ventas_diarias TO powerbi_reader;
-GRANT SELECT ON vw_alertas TO powerbi_reader;
-GRANT SELECT ON vw_nivel_servicio TO powerbi_reader;
+DO $do$
+BEGIN
+   IF EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'powerbi_reader') THEN
+      GRANT SELECT ON vw_pronosticos TO powerbi_reader;
+      GRANT SELECT ON vw_ventas_diarias TO powerbi_reader;
+      GRANT SELECT ON vw_alertas TO powerbi_reader;
+      GRANT SELECT ON vw_nivel_servicio TO powerbi_reader;
+   END IF;
+END
+$do$;

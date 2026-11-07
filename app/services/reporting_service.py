@@ -34,7 +34,7 @@ from app.services.alert_service import AlertService
 class ReportingService:
     @staticmethod
     def ensure_storage_dir() -> str:
-        rep_dir = os.path.join(os.getcwd(), settings.STORAGE_REPORTES_DIR)
+        rep_dir = settings.STORAGE_REPORTES_DIR if os.path.isabs(settings.STORAGE_REPORTES_DIR) else os.path.join(os.getcwd(), settings.STORAGE_REPORTES_DIR)
         os.makedirs(rep_dir, exist_ok=True)
         return rep_dir
 

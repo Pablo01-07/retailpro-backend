@@ -304,3 +304,55 @@ El subsistema de alertas operativas se encuentra completamente integrado con el 
 
 6. **Salvaguarda de Pruebas:**
    - La suite automatizada de pruebas y el script de inicialización (`scripts/inicializar_sistema_completo.py`) incorporan mocks automáticos de `smtplib.SMTP` y la bandera `SKIP_EMAIL_NOTIFICATIONS=true` para garantizar que ningún entorno de prueba o inicialización remita correos reales.
+
+---
+
+## 10. Despliegue en Producción (Railway y PostgreSQL Gestionado en Supabase)
+
+### 10.1 Contenedor Docker y Despliegue en Railway
+El repositorio cuenta con configuración lista para despliegue contenerizado en plataformas PaaS como Railway mediante [`Dockerfile`](Dockerfile):
+- **Puerto dinámico y escucha:** El servidor escucha en `0.0.0.0` y en el puerto especificado por la variable de entorno `PORT` (por defecto `8000`), sin recarga en caliente (`--reload`).
+- **Seguridad en contenedor:** La aplicación se ejecuta bajo un usuario sin privilegios `appuser` (UID 1000).
+- **Comando de inicio:** Ejecuta de forma secuencial las migraciones pendientes y arranca el servidor web:
+  `alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}`
+  No entrena nuevamente ni elimina datos preexistentes si la base de datos ya contiene información.
+- **Volumen persistente:** La variable `STORAGE_DIR` (por defecto `storage`) define la raíz de almacenamiento de modelos serializados (`.joblib`, `.json`), reportes y cargas. En Railway se puede montar un volumen en la ruta `/app/storage`.
+- **Healthcheck público:** El endpoint `GET /health` responde `HTTP 200` con `{"status": "healthy", "database": "connected"}` sin requerir cabeceras de autenticación.
+- **Validación de arranque en producción:** Si `ENVIRONMENT=production`, el arranque se interrumpe de inmediato con un mensaje explícito si `SECRET_KEY` no ha sido configurada o conserva el valor predeterminado de desarrollo.
+
+### 10.2 Integración con PostgreSQL Gestionado (Supabase)
+El backend es totalmente compatible con instancias gestionadas de PostgreSQL en Supabase:
+- **URL de Conexión (Session Pooler):** Se recomienda utilizar el pooler de Supabase en modo sesión (puerto `5432`) con el siguiente formato en `DATABASE_URL`:
+  `postgresql+psycopg2://postgres.<ref>:<clave>@<host>:5432/postgres?sslmode=require`
+  El backend normaliza automáticamente los esquemas `postgres://`, `postgresql://` y `postgresql+psycopg2://` hacia el dialecto `postgresql+psycopg://` compatible con el driver `psycopg` v3.
+- **Parámetros de conexión y pool:** Para optimizar la cuota de conexiones en planes gratuitos, el motor SQLAlchemy opera con `pool_size=5`, `max_overflow=2`, `pool_pre_ping=True` y soporte SSL mediante `sslmode=require`.
+- **Compatibilidad con bases de datos gestionadas (`DB_MANAGED`):** Al definir `DB_MANAGED=true` o pasar la bandera `--sin-crear-base` en scripts, se omiten las sentencias `CREATE DATABASE` y `DROP DATABASE`.
+- **Vistas SQL y permisos:** El script [`scripts/create_views.sql`](scripts/create_views.sql) crea las 4 vistas operativas (`vw_pronosticos`, `vw_ventas_diarias`, `vw_alertas`, `vw_nivel_servicio`) e ignora de manera segura la concesión de permisos al rol `powerbi_reader` si dicho rol no existe en la base gestionada o si se carece de permisos de superusuario.
+- **Seguridad Row Level Security (RLS):** Se habilita Row Level Security en las 9 tablas maestras y en `alembic_version` sin políticas públicas. Esto previene que la API REST pública de Supabase (PostgREST) exponga datos tabulares a clientes anónimos (`anon` o `authenticated`), mientras que la conexión del backend efectuada con el rol propietario de la base de datos mantiene acceso irrestricto de lectura y escritura.
+
+### 10.3 Inicialización Inicial de un Servidor Nuevo
+Para inicializar una base de datos vacía en un servidor nuevo (crear usuarios administradores, cargar el dataset base y entrenar el modelo activo):
+```bash
+python scripts/inicializar_sistema_completo.py
+```
+> [!IMPORTANT]
+> El comando anterior **NO utiliza `--recrear` por defecto**. Preserva cualquier dato existente y solo aplica migraciones, siembra usuarios con las variables `SEED_*_PASSWORD`, ingesta `datos_carga/` y genera el modelo de producción si no existiera uno activo.
+> En bases de datos gestionadas donde no se disponga de privilegios de superusuario para crear bases de datos, utiliza:
+> ```bash
+> python scripts/inicializar_sistema_completo.py --sin-crear-base
+> ```
+> O define `DB_MANAGED=true` en el entorno.
+
+### 10.4 Comportamiento sin Servicio SMTP Configurado
+Si las variables de entorno `SMTP_HOST`, `SMTP_USER` o `SMTP_PASSWORD` se encuentran vacías:
+- `POST /api/v1/auth/recuperar`: Responde de inmediato `HTTP 503 Service Unavailable` con `{"detail": "El envío de correos no está disponible en este momento. Comunícate con el administrador."}` sin intentar establecer conexión a ningún servidor de correo.
+- **Alertas operativas:** El envío de correos de alertas (tanto en ejecuciones de pronóstico/ETL como en `POST /api/v1/notificaciones/resumen-alertas`) se omite de forma silenciosa registrando una advertencia en los logs del servidor, sin interrumpir ni demorar la ejecución de los procesos.
+
+### 10.5 Nuevas Variables de Entorno
+| Variable | Descripción | Valor Predeterminado |
+|---|---|---|
+| `PORT` | Puerto TCP en el que el servidor Uvicorn escucha peticiones | `8000` |
+| `DB_MANAGED` | Si es `true`, los scripts de inicialización no ejecutan `CREATE/DROP DATABASE` | `false` |
+| `CORS_ORIGINS` | Lista de orígenes CORS permitidos separados por coma (en producción excluye `localhost`) | `""` |
+| `STORAGE_DIR` | Ruta raíz para persistencia de modelos, reportes y configuración (admite montaje de volumen) | `storage` |
+

@@ -149,7 +149,7 @@ def descargar_archivo_reporte(
     """
     Descarga segura de reportes generados desde storage/reportes/.
     """
-    storage_dir = os.path.join(os.getcwd(), settings.STORAGE_REPORTES_DIR)
+    storage_dir = settings.STORAGE_REPORTES_DIR if os.path.isabs(settings.STORAGE_REPORTES_DIR) else os.path.join(os.getcwd(), settings.STORAGE_REPORTES_DIR)
     safe_filename = os.path.basename(filename)
     filepath = os.path.join(storage_dir, safe_filename)
 

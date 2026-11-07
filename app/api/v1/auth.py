@@ -194,6 +194,12 @@ def request_password_recovery(
     - 403 si el usuario está inactivo.
     - 200 si el usuario existe y está activo.
     """
+    if not EmailService.is_smtp_configured():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="El envío de correos no está disponible en este momento. Comunícate con el administrador."
+        )
+
     correo_destino = recovery_data.correo_destino
     if not correo_destino:
         raise HTTPException(

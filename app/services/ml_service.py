@@ -900,8 +900,10 @@ class MLForecastService:
                 })
 
             t2_start = time.time()
-            model_file = os.path.join("storage", "modelos", f"modelo_{modelo_activo.id_modelo}.json")
-            fallback_file = os.path.join("storage", "modelos", "modelo_activo.json")
+            model_dir = os.path.join(settings.STORAGE_DIR, "modelos")
+            os.makedirs(model_dir, exist_ok=True)
+            model_file = os.path.join(model_dir, f"modelo_{modelo_activo.id_modelo}.json")
+            fallback_file = os.path.join(model_dir, "modelo_activo.json")
             model = xgb.XGBRegressor(
                 n_estimators=120,
                 max_depth=5,
@@ -919,7 +921,7 @@ class MLForecastService:
                 df_train = cls.generate_training_matrix(df_grid, end_date=max_date, sample_step_days=7)
                 if not df_train.empty:
                     model.fit(df_train[cls.FEATURE_COLS], df_train["y_real"])
-                    os.makedirs(os.path.join("storage", "modelos"), exist_ok=True)
+                    os.makedirs(model_dir, exist_ok=True)
                     model.save_model(model_file)
                     model.save_model(fallback_file)
                 else:
@@ -949,7 +951,7 @@ class MLForecastService:
             shap_values = explainer.shap_values(X_future)
             feature_names = cls.FEATURE_COLS
 
-            calib_path = os.path.join("storage", "modelos", "calibracion_activa.json")
+            calib_path = os.path.join(model_dir, "calibracion_activa.json")
             percentiles_relativos = {
                 "Abarrotes": (-0.4426, 0.5295),
                 "Bebidas": (-0.4455, 0.5152),
