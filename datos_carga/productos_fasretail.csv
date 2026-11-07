@@ -1,0 +1,61 @@
+sku,nombre,categoria,stock_actual,punto_reorden
+ABA-001,Arroz Costeño Extra 1kg,Abarrotes,3375,315
+ABA-002,Azúcar Rubia Cartavio 1kg,Abarrotes,800,280
+ABA-003,Aceite Vegetal Primor Clásico 1L,Abarrotes,175,245
+ABA-004,Fideos Spaghetti Don Vittorio 450g,Abarrotes,1200,350
+ABA-005,Leche Gloria Evaporada Entera 400g,Abarrotes,1690,455
+ABA-006,Atún Primor Lomitos en Aceite 170g,Abarrotes,2550,210
+ABA-007,Avena 3 Ositos Tradicional 500g,Abarrotes,750,175
+ABA-008,Harina Blanca Flor sin Preparar 1kg,Abarrotes,640,140
+ABA-009,Sal de Mesa Marina Emsal 1kg,Abarrotes,105,245
+ABA-010,Café Soluble Nescafé Tradición 200g,Abarrotes,300,105
+BEB-001,Gaseosa Inca Kola 1.5L,Bebidas,5225,385
+BEB-002,Gaseosa Coca Cola 1.5L,Bebidas,1200,350
+BEB-003,Agua San Luis sin Gas 1L,Bebidas,1040,280
+BEB-004,Cerveza Cusqueña Dorada 330ml,Bebidas,980,245
+BEB-005,Cerveza Pilsen Callao 355ml,Bebidas,225,315
+BEB-006,Jugo Frugos del Valle Durazno 1L,Bebidas,2400,210
+BEB-007,Bebida Hidratante Sporade Mora 500ml,Bebidas,450,175
+BEB-008,Té Helado Free Tea Limón 500ml,Bebidas,440,154
+BEB-009,Vino Tacama Selección Especial 750ml,Bebidas,176,56
+BEB-010,Pisco Quebranta Santiago Queirolo 750ml,Bebidas,144,42
+LAC-001,Yogurt Gloria Fresa 1kg,Lácteos,3420,266
+LAC-002,Queso Edam Bonlé Tajado 200g,Lácteos,560,140
+LAC-003,Queso Fresco Laive 250g,Lácteos,110,154
+LAC-004,Mantequilla Gloria con Sal 200g,Lácteos,576,126
+LAC-005,Margarina Dorina 225g,Lácteos,432,168
+LAC-006,Crema de Leche Nestlé 290g,Lácteos,1050,98
+LAC-007,Leche Chocolatada Gloria UHT 1L,Lácteos,616,196
+LAC-008,Manjarblanco Nestlé Pote 500g,Lácteos,288,84
+LAC-009,Huevo de Gallina La Calera x 15,Lácteos,126,294
+LAC-010,Jamónada Especial San Fernando 200g,Lácteos,728,182
+PER-001,Shampoo Head & Shoulders Limpieza 375ml,Cuidado Personal,1360,112
+PER-002,Jabón de Tocador Dove Original 90g,Cuidado Personal,1024,224
+PER-003,Crema Dental Kolynos Triple Limpieza 90g,Cuidado Personal,630,245
+PER-004,Cepillo Dental Colgate 360 Medio,Cuidado Personal,280,98
+PER-005,Desodorante Rexona Men Cobalt Roll-on 50ml,Cuidado Personal,440,140
+PER-006,Papel Higiénico Suave Rindemax x 4,Cuidado Personal,4275,315
+PER-007,Toallas Femeninas Nosotras Invisible x 10,Cuidado Personal,75,175
+PER-008,Afeitadora Gillette Prestobarba 3 x 2,Cuidado Personal,420,105
+PER-009,Enjuague Bucal Listerine Cool Mint 250ml,Cuidado Personal,360,84
+PER-010,Crema Corporal Nivea Milk Nutritiva 250ml,Cuidado Personal,320,70
+LIM-001,Detergente en Polvo Bolívar Floral 800g,Limpieza,3040,266
+LIM-002,Detergente en Polvo Ace Blanco 800g,Limpieza,680,238
+LIM-003,Lejía Clorox Tradicional 1L,Limpieza,210,294
+LIM-004,Lavavajillas en Pasta Ayudín Limón 450g,Limpieza,864,252
+LIM-005,Suavizante Suavitel Fresca Primavera 1L,Limpieza,572,154
+LIM-006,Limpiador Líquido Poett Lavanda 900ml,Limpieza,2520,196
+LIM-007,Esponja Scotch-Brite Clásica x 2,Limpieza,750,175
+LIM-008,Bolsas de Basura Ekono 50L x 10,Limpieza,960,210
+LIM-009,Limpiavidrios Sapolio Antiestático 500ml,Limpieza,48,112
+LIM-010,Desinfectante Pinesol Pino 1L,Limpieza,280,98
+SNA-001,Papas Fritas Lay's Clásicas 160g,Snacks,3000,280
+SNA-002,Galletas Casino Menta Paquete x 6,Snacks,864,252
+SNA-003,Galletas Soda San Jorge x 6,Snacks,1170,315
+SNA-004,Chocolate Sublime Barra 30g,Snacks,1680,420
+SNA-005,Chocolate Triángulo D'Onofrio 30g,Snacks,1500,350
+SNA-006,Chizitos Pascualillo Queso 120g,Snacks,2720,224
+SNA-007,Tortees Picante Choclo Dulce 150g,Snacks,84,196
+SNA-008,Caramelos Chicho Limón Bolsa 100g,Snacks,600,210
+SNA-009,Galleta Oreo Original 108g,Snacks,836,266
+SNA-010,Maní Salado Karinto 100g,Snacks,576,168
