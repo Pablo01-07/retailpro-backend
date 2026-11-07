@@ -23,7 +23,7 @@ La base de datos relacional PostgreSQL consta **EXACTAMENTE de 9 tablas maestros
 ## 2. Guía de Instalación desde Cero en una Nueva Máquina
 
 ### 2.1 Requisitos Previos
-- **Python**: Versión 3.11 o 3.12 (compatible con 3.13).
+- **Python**: Versión 3.13.
 - **PostgreSQL**: Versión 16 o 17 corriendo localmente en el puerto `5432`.
 - **Git** y **PowerShell** (o terminal Bash en Linux/macOS).
 
