@@ -36,6 +36,16 @@ async def lifespan(app: FastAPI):
     for sub in ["", "modelos", "cargas", "config", "reportes", "entrada"]:
         p = os.path.join(settings.STORAGE_DIR, sub) if sub else settings.STORAGE_DIR
         os.makedirs(p, exist_ok=True)
+    if settings.STORAGE_REPORTES_DIR:
+        os.makedirs(settings.STORAGE_REPORTES_DIR, exist_ok=True)
+    if settings.STORAGE_ENTRADA_DIR:
+        os.makedirs(settings.STORAGE_ENTRADA_DIR, exist_ok=True)
+    if settings.ARTIFACTS_DIR:
+        os.makedirs(settings.ARTIFACTS_DIR, exist_ok=True)
+    cfg_path = os.path.join(settings.STORAGE_DIR, "config", "procesos.json")
+    if not os.path.exists(cfg_path):
+        from app.services.scheduler import save_procesos_config, get_procesos_config
+        save_procesos_config(get_procesos_config())
     if os.environ.get("ENVIRONMENT") != "testing":
         start_scheduler()
         set_scheduler_instance(scheduler)

@@ -24,10 +24,7 @@ COPY alembic/ ./alembic/
 COPY alembic.ini .
 COPY scripts/ ./scripts/
 COPY datos_carga/ ./datos_carga/
-COPY storage/ ./storage/
-COPY artifacts/ ./artifacts/
-
-RUN mkdir -p /app/storage && chown -R appuser:appuser /app
+RUN mkdir -p /app/storage /app/artifacts && chown -R appuser:appuser /app
 
 USER appuser
 
