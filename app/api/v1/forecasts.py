@@ -217,9 +217,32 @@ def get_pronostico_detalle_sku(
     ).order_by(Pronostico.horizonte_dias).all()
 
     if not pronosticos:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No se han generado pronósticos activos para el producto {prod.sku}."
+        ventas_recientes = db.query(VentaHistorica).filter(
+            VentaHistorica.id_producto == prod.id_producto
+        ).order_by(desc(VentaHistorica.fecha)).limit(30).all()
+
+        historico = [
+            {"fecha": v.fecha.isoformat(), "cantidad_vendida": v.cantidad_vendida, "precio": float(v.precio_unitario)}
+            for v in reversed(ventas_recientes)
+        ]
+
+        return PronosticoSkuDetalle(
+            id_producto=prod.id_producto,
+            sku=prod.sku,
+            nombre_producto=prod.nombre,
+            categoria=prod.categoria,
+            stock_actual=prod.stock_actual,
+            punto_reorden=prod.punto_reorden,
+            demanda_total_proyectada_14d=0.0,
+            probabilidad_quiebre=0.0,
+            nivel_incertidumbre="N/D",
+            fecha_generacion=None,
+            id_modelo=modelo_activo.id_modelo,
+            version_modelo=modelo_activo.version,
+            mape_modelo=float(modelo_activo.mape) if modelo_activo.mape else None,
+            serie_14_dias=[],
+            historico_reciente=historico,
+            pronostico_disponible=False
         )
 
     fecha_gen = pronosticos[0].fecha_generacion
@@ -268,5 +291,6 @@ def get_pronostico_detalle_sku(
         version_modelo=modelo_activo.version,
         mape_modelo=float(modelo_activo.mape) if modelo_activo.mape else None,
         serie_14_dias=serie_14,
-        historico_reciente=historico
+        historico_reciente=historico,
+        pronostico_disponible=True
     )

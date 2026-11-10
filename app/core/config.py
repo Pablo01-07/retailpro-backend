@@ -53,6 +53,8 @@ class Settings(BaseSettings):
 
     UNCERTAINTY_THRESHOLD_LOW: float = 0.95
     UNCERTAINTY_THRESHOLD_MEDIUM: float = 1.10
+    UNCERTAINTY_CV_PERCENTILE_LOW: float = 40.0
+    UNCERTAINTY_CV_PERCENTILE_HIGH: float = 80.0
 
     SMTP_HOST: str = ""
     SMTP_PORT: int = 587

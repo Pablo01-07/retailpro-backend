@@ -698,3 +698,44 @@ def test_persistencia_procesos_json_sobrevive_reinicio(client, admin_token):
         json={"activo": True, "hora": "02:00"}
     )
 
+
+def test_conflicto_horarios_procesos_patch_y_put(client, admin_token):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    client.patch("/api/v1/procesos/configuracion/pronostico_diario", headers=headers, json={"activo": True, "hora": "04:00"})
+    client.patch("/api/v1/procesos/configuracion/etl_diario", headers=headers, json={"activo": True, "hora": "02:00"})
+
+    r_patch_conflict = client.patch(
+        "/api/v1/procesos/configuracion/etl_diario",
+        headers=headers,
+        json={"hora": "04:00"}
+    )
+    assert r_patch_conflict.status_code == 409
+    assert r_patch_conflict.json()["detail"] == "Conflicto de horario: el proceso 'Generación de Pronósticos' ya está programado a las 04:00. Seleccione un horario distinto."
+
+    r_patch_ok = client.patch(
+        "/api/v1/procesos/configuracion/etl_diario",
+        headers=headers,
+        json={"hora": "02:00"}
+    )
+    assert r_patch_ok.status_code == 200
+
+    r_put_conflict = client.put(
+        "/api/v1/procesos/configuracion",
+        headers=headers,
+        json={"etl_hora": "04:00"}
+    )
+    assert r_put_conflict.status_code == 409
+    assert r_put_conflict.json()["detail"] == "Conflicto de horario: el proceso 'Generación de Pronósticos' ya está programado a las 04:00. Seleccione un horario distinto."
+
+    client.patch("/api/v1/procesos/configuracion/pronostico_diario", headers=headers, json={"activo": False})
+    r_patch_inactivo_ok = client.patch(
+        "/api/v1/procesos/configuracion/etl_diario",
+        headers=headers,
+        json={"hora": "04:00"}
+    )
+    assert r_patch_inactivo_ok.status_code == 200
+
+    client.patch("/api/v1/procesos/configuracion/etl_diario", headers=headers, json={"activo": True, "hora": "02:00"})
+    client.patch("/api/v1/procesos/configuracion/pronostico_diario", headers=headers, json={"activo": True, "hora": "04:00"})
+

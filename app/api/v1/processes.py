@@ -306,6 +306,17 @@ def patch_configuracion_proceso(
                 detail=f"Hora '{patch_data.hora}' inválida. Formato requerido: HH:MM (00:00 a 23:59)."
             )
         hora_nueva = hora_candidate
+        for otro in ["etl", "pronostico", "reentrenamiento"]:
+            if otro != key:
+                otro_activo = cfg.get(f"{otro}_activo", True)
+                if otro_activo:
+                    otro_hora = cfg.get(f"{otro}_hora", PROCESOS_METADATA[otro]["default_hora"])
+                    if otro_hora == hora_nueva:
+                        nom_otro = PROCESOS_METADATA[otro]["nombre"]
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail=f"Conflicto de horario: el proceso '{nom_otro}' ya está programado a las {hora_nueva}. Seleccione un horario distinto."
+                        )
 
     frec_efectiva = (frec_nueva or cfg.get(f"{key}_frecuencia", info["default_frec"])).lower().strip()
     dia_semana_nuevo = None
@@ -397,6 +408,39 @@ def update_configuracion_procesos(
     """Actualiza la programación horaria y notificaciones de procesos batch (Mockup 09). Reconfigura el Scheduler en vivo."""
     data = config_in.model_dump(exclude_unset=True)
     cfg = get_procesos_config()
+
+    procesos_keys = ["etl", "pronostico", "reentrenamiento"]
+    cambio_algun_horario = False
+    for p in procesos_keys:
+        k_hora = f"{p}_hora"
+        if k_hora in data and data[k_hora] is not None:
+            hora_act = cfg.get(k_hora, PROCESOS_METADATA[p]["default_hora"])
+            if data[k_hora] != hora_act:
+                cambio_algun_horario = True
+                break
+
+    if cambio_algun_horario:
+        horas_res = {}
+        activos_res = {}
+        for p in procesos_keys:
+            horas_res[p] = data.get(f"{p}_hora") or cfg.get(f"{p}_hora", PROCESOS_METADATA[p]["default_hora"])
+            if f"{p}_activo" in data and data[f"{p}_activo"] is not None:
+                activos_res[p] = bool(data[f"{p}_activo"])
+            else:
+                activos_res[p] = bool(cfg.get(f"{p}_activo", True))
+
+        for p1 in procesos_keys:
+            k1_hora = f"{p1}_hora"
+            hora_cambio = (k1_hora in data and data[k1_hora] is not None and data[k1_hora] != cfg.get(k1_hora, PROCESOS_METADATA[p1]["default_hora"]))
+            if hora_cambio and activos_res[p1]:
+                for p2 in procesos_keys:
+                    if p1 != p2 and activos_res[p2] and horas_res[p1] == horas_res[p2]:
+                        nom_otro = PROCESOS_METADATA[p2]["nombre"]
+                        h_conflicto = horas_res[p1]
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail=f"Conflicto de horario: el proceso '{nom_otro}' ya está programado a las {h_conflicto}. Seleccione un horario distinto."
+                        )
 
     cambios_generales = []
     for k, v in data.items():

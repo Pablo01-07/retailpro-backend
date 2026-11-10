@@ -64,7 +64,113 @@ def get_12_monthly_cutoffs(max_date: date) -> List[date]:
     return sorted(cutoffs)
 
 
+def calcular_niveles_incertidumbre_por_sku(
+    db: Session,
+    df_ventas: Optional[pd.DataFrame] = None
+) -> Dict[Any, Dict[str, Any]]:
+    productos = db.query(Producto).order_by(Producto.sku.asc()).all()
+    if not productos:
+        return {}
+
+    prod_map = {p.id_producto: p for p in productos}
+
+    if df_ventas is not None and not df_ventas.empty:
+        df_base = df_ventas.copy()
+        if not pd.api.types.is_datetime64_any_dtype(df_base["fecha"]):
+            df_base["fecha"] = pd.to_datetime(df_base["fecha"])
+        max_fecha = df_base["fecha"].max()
+        if pd.isna(max_fecha):
+            max_fecha = None
+        else:
+            fecha_inicio = max_fecha - pd.Timedelta(days=180)
+            df_180 = df_base[df_base["fecha"] >= fecha_inicio]
+    else:
+        max_date_val = db.query(func.max(VentaHistorica.fecha)).scalar()
+        if not max_date_val:
+            df_180 = pd.DataFrame()
+        else:
+            fecha_inicio = max_date_val - timedelta(days=180)
+            ventas_q = db.query(
+                VentaHistorica.id_producto,
+                VentaHistorica.fecha,
+                VentaHistorica.cantidad_vendida
+            ).filter(VentaHistorica.fecha >= fecha_inicio).all()
+            df_180 = pd.DataFrame([
+                {
+                    "id_producto": v.id_producto,
+                    "fecha": v.fecha,
+                    "cantidad_vendida": v.cantidad_vendida
+                }
+                for v in ventas_q
+            ])
+
+    conteo_ventas_db = dict(
+        db.query(
+            VentaHistorica.id_producto,
+            func.count(VentaHistorica.id_venta)
+        ).group_by(VentaHistorica.id_producto).all()
+    )
+
+    sku_stats = {}
+    for pid, prod in prod_map.items():
+        total_dias_db = conteo_ventas_db.get(pid, 0)
+        sub = df_180[df_180["id_producto"] == pid] if not df_180.empty else pd.DataFrame()
+        dias_180 = len(sub)
+
+        tiene_menos_30_dias = (total_dias_db < 30) or (dias_180 < 30)
+
+        if not sub.empty:
+            vals = sub["cantidad_vendida"].values.astype(float)
+            media = float(np.mean(vals)) if len(vals) > 0 else 0.0
+            desv = float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0
+            cv = float(desv / media) if media > 0 else 0.0
+        else:
+            cv = 0.0
+
+        sku_stats[pid] = {
+            "pid": pid,
+            "sku": prod.sku,
+            "menos_30": tiene_menos_30_dias,
+            "cv": cv,
+            "cv_round": round(cv, 3)
+        }
+
+    cvs_validos = [s["cv"] for s in sku_stats.values() if not s["menos_30"]]
+    if not cvs_validos:
+        cvs_validos = [s["cv"] for s in sku_stats.values()]
+
+    if cvs_validos:
+        p_low = float(np.percentile(cvs_validos, settings.UNCERTAINTY_CV_PERCENTILE_LOW))
+        p_high = float(np.percentile(cvs_validos, settings.UNCERTAINTY_CV_PERCENTILE_HIGH))
+    else:
+        p_low = 0.30
+        p_high = 0.40
+
+    resultado = {}
+    for pid, s in sku_stats.items():
+        if s["menos_30"]:
+            nivel = "ALTO"
+        elif s["cv"] <= p_low:
+            nivel = "BAJO"
+        elif s["cv"] >= p_high:
+            nivel = "ALTO"
+        else:
+            nivel = "MEDIO"
+
+        info = {
+            "nivel": nivel,
+            "cv": s["cv_round"],
+            "coeficiente_variacion": s["cv_round"]
+        }
+        resultado[pid] = info
+        resultado[s["sku"]] = info
+
+    return resultado
+
+
 class MLForecastService:
+
+    calcular_niveles_incertidumbre_por_sku = staticmethod(calcular_niveles_incertidumbre_por_sku)
 
     FEATURE_COLS = [
         "lag_1", "lag_2", "lag_3", "lag_7", "lag_14", "lag_21", "lag_28",
@@ -343,6 +449,7 @@ class MLForecastService:
     ) -> Tuple[List[Dict[str, Any]], Dict[str, List[float]], Dict[str, Tuple[float, float]], Dict[str, Any], float]:
         max_date = df_grid["fecha"].max()
         cortes = get_12_monthly_cutoffs(max_date)
+        niveles_incertidumbre_sku = calcular_niveles_incertidumbre_por_sku(db=db, df_ventas=df_grid)
 
         backtest_results = []
         residuos_rel_diarios_cat: Dict[str, List[float]] = {cat: [] for cat in set(p["categoria"] for p in prod_dict.values())}
@@ -454,6 +561,7 @@ class MLForecastService:
                     if inf_p <= y_r <= sup_p:
                         aciertos_cobertura += 1
 
+                    sku_info = niveles_incertidumbre_sku.get(pid, {"nivel": "MEDIO", "cv": 0.0})
                     pronosticos_batch.append(Pronostico(
                         id_producto=pid,
                         id_modelo=mv.id_modelo,
@@ -462,8 +570,8 @@ class MLForecastService:
                         cantidad_proyectada=round(y_p, 2),
                         intervalo_confianza_inf=inf_p,
                         intervalo_confianza_sup=sup_p,
-                        nivel_incertidumbre="MEDIO",
-                        explicacion_shap={"motivo": "backtest", "corte": corte.isoformat()},
+                        nivel_incertidumbre=sku_info["nivel"],
+                        explicacion_shap={"motivo": "backtest", "corte": corte.isoformat(), "coeficiente_variacion": sku_info["cv"]},
                         cantidad_sugerida_reposicion=0,
                         cantidad_ajustada_reposicion=None,
                         fecha_limite_reposicion=None
@@ -717,6 +825,7 @@ class MLForecastService:
         pronosticos_prod = []
         feature_names = cls.FEATURE_COLS
         lead_time = settings.DEFAULT_LEAD_TIME_DAYS
+        niveles_incertidumbre_sku = calcular_niveles_incertidumbre_por_sku(db=db, df_ventas=df_merged)
 
         resumen_cobertura = []
 
@@ -767,6 +876,10 @@ class MLForecastService:
                 for fi in top_5_idx
             ]
 
+            sku_info = niveles_incertidumbre_sku.get(pid, {"nivel": "ALTO", "cv": 0.0})
+            nivel_inc = sku_info["nivel"]
+            cv_sku = sku_info["cv"]
+
             for idx_local, (_, row) in enumerate(pgroup.iterrows()):
                 h = int(row["horizonte_dias"])
                 y_p = float(row["y_pred"])
@@ -774,18 +887,11 @@ class MLForecastService:
                 inf = max(0.0, round(y_p * (1.0 + p25_rel), 2))
                 sup = max(0.0, round(y_p * (1.0 + p975_rel), 2))
 
-                ancho_rel = (sup - inf) / max(1.0, y_p)
-                if ancho_rel <= settings.UNCERTAINTY_THRESHOLD_LOW:
-                    nivel_inc = "BAJO"
-                elif ancho_rel <= settings.UNCERTAINTY_THRESHOLD_MEDIUM:
-                    nivel_inc = "MEDIO"
-                else:
-                    nivel_inc = "ALTO"
-
                 explicacion_payload = {
                     "probabilidad_quiebre": prob_quiebre,
                     "demanda_acumulada_14d": round(demanda_acum_proyectada, 2),
                     "dias_cobertura_stock": dias_cobertura,
+                    "coeficiente_variacion": cv_sku,
                     "top_factores": top_factores_sku
                 }
 
@@ -969,6 +1075,8 @@ class MLForecastService:
                 except Exception:
                     pass
 
+            niveles_incertidumbre_sku = calcular_niveles_incertidumbre_por_sku(db=db, df_ventas=df_grid)
+
             for pid, pgroup in df_future.groupby("id_producto", sort=True):
                 pdata = prod_dict.get(pid)
                 if not pdata:
@@ -1011,18 +1119,15 @@ class MLForecastService:
 
                 p25_rel, p975_rel = percentiles_relativos.get(cat, (-0.45, 0.52))
 
+                sku_info = niveles_incertidumbre_sku.get(pid, {"nivel": "ALTO", "cv": 0.0})
+                inc = sku_info["nivel"]
+                cv_sku = sku_info["cv"]
+
                 for _, row in pgroup.iterrows():
                     h = int(row["horizonte_dias"])
                     yp = float(row["y_pred"])
                     inf = max(0.0, round(yp * (1.0 + p25_rel), 2))
                     sup = max(0.0, round(yp * (1.0 + p975_rel), 2))
-                    ancho = (sup - inf) / max(1.0, yp)
-                    if ancho <= settings.UNCERTAINTY_THRESHOLD_LOW:
-                        inc = "BAJO"
-                    elif ancho <= settings.UNCERTAINTY_THRESHOLD_MEDIUM:
-                        inc = "MEDIO"
-                    else:
-                        inc = "ALTO"
 
                     pronosticos_nuevos.append(Pronostico(
                         id_producto=pid,
@@ -1037,6 +1142,7 @@ class MLForecastService:
                             "probabilidad_quiebre": prob_q,
                             "demanda_acumulada_14d": round(dem_14d, 2),
                             "dias_cobertura_stock": cob,
+                            "coeficiente_variacion": cv_sku,
                             "top_factores": top_factores_sku
                         },
                         cantidad_sugerida_reposicion=cant_sug,
@@ -1078,3 +1184,6 @@ class MLForecastService:
                 json.dump(etapas_pron, f, indent=4, ensure_ascii=False)
 
         return len(pronosticos_nuevos)
+
+
+MLService = MLForecastService

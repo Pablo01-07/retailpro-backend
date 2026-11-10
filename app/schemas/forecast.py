@@ -44,12 +44,13 @@ class PronosticoSkuDetalle(RetailProBaseModel):
     demanda_total_proyectada_14d: float
     probabilidad_quiebre: float
     nivel_incertidumbre: str
-    fecha_generacion: datetime
+    fecha_generacion: Optional[datetime] = None
     id_modelo: int
     version_modelo: str
     mape_modelo: Optional[float] = None
     serie_14_dias: List[PronosticoDiaItem]
     historico_reciente: List[Dict[str, Any]]
+    pronostico_disponible: bool = True
 
 
 class PronosticoListResponse(RetailProBaseModel):

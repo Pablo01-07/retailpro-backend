@@ -215,3 +215,60 @@ def test_api_forecasts_and_models(client, admin_token, db_session):
     data_mon = resp_mon.json()
     assert "serie_mensual" in data_mon
     assert "mape_promedio_historico" in data_mon
+
+
+def test_pronostico_sku_sin_pronostico_vigente_cp044(client, admin_token, db_session):
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+    modelo = db_session.query(ModeloVersion).filter(ModeloVersion.estado == "ACTIVA").first()
+    if not modelo:
+        modelo = ModeloVersion(
+            version="v1.0.0",
+            fecha_entrenamiento=datetime.utcnow(),
+            motivo_entrenamiento="INICIAL",
+            mape=15.0,
+            estado="ACTIVA"
+        )
+        db_session.add(modelo)
+        db_session.commit()
+
+    prod_sin_pron = Producto(
+        sku="SKU-SIN-PRON",
+        nombre="Producto Sin Pronostico",
+        categoria="Abarrotes",
+        stock_actual=40,
+        punto_reorden=15,
+        estado="activo"
+    )
+    db_session.add(prod_sin_pron)
+    db_session.commit()
+
+    resp = client.get(f"/api/v1/pronosticos/{prod_sin_pron.sku}", headers=admin_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["sku"] == "SKU-SIN-PRON"
+    assert data["pronostico_disponible"] is False
+    assert data["serie_14_dias"] == []
+    assert data["demanda_total_proyectada_14d"] == 0.0
+    assert data["probabilidad_quiebre"] == 0.0
+    assert data["nivel_incertidumbre"] == "N/D"
+    assert data["fecha_generacion"] is None
+
+    resp_404 = client.get("/api/v1/pronosticos/SKU-NO-EXISTE-XYZ", headers=admin_headers)
+    assert resp_404.status_code == 404
+
+
+def test_nivel_incertidumbre_por_sku_cp027(db_session):
+    from app.services.ml_service import calcular_niveles_incertidumbre_por_sku
+    from app.core.config import settings
+
+    assert hasattr(settings, "UNCERTAINTY_CV_PERCENTILE_LOW")
+    assert hasattr(settings, "UNCERTAINTY_CV_PERCENTILE_HIGH")
+    assert settings.UNCERTAINTY_CV_PERCENTILE_LOW == 40
+    assert settings.UNCERTAINTY_CV_PERCENTILE_HIGH == 80
+
+    niveles = calcular_niveles_incertidumbre_por_sku(db=db_session)
+    if niveles:
+        sample_info = next(iter(niveles.values()))
+        assert "nivel" in sample_info
+        assert sample_info["nivel"] in ["BAJO", "MEDIO", "ALTO"]
+        assert "cv" in sample_info
