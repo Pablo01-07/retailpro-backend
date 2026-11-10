@@ -184,7 +184,7 @@ class MLForecastService:
 
     @staticmethod
     def load_clean_sales_grid(db: Session) -> Tuple[pd.DataFrame, Dict[int, Dict[str, Any]], Dict[str, int], Dict[str, int]]:
-        productos = db.query(Producto).order_by(Producto.sku.asc()).all()
+        productos = db.query(Producto).filter(Producto.estado != "descontinuado").order_by(Producto.sku.asc()).all()
         if not productos:
             raise ValueError("No existen productos registrados en la base de datos.")
 
@@ -912,6 +912,11 @@ class MLForecastService:
 
         pronosticos_prod.sort(key=lambda x: (x.id_producto, x.horizonte_dias))
         db.bulk_save_objects(pronosticos_prod)
+        db.query(Pronostico).filter(
+            Pronostico.id_producto.in_(
+                db.query(Producto.id_producto).filter(Producto.estado == "descontinuado")
+            )
+        ).delete(synchronize_session=False)
         db.commit()
         t3_end = time.time()
         if id_carga:
@@ -970,14 +975,17 @@ class MLForecastService:
         if not modelo_activo:
             return 0
 
-        productos = db.query(Producto).filter(Producto.estado == "activo").all()
-        if not productos:
-            productos = db.query(Producto).order_by(Producto.sku.asc()).all()
+        productos = db.query(Producto).filter(Producto.estado != "descontinuado").order_by(Producto.sku.asc()).all()
         if not productos:
             return 0
 
         db.query(Pronostico).filter(
             Pronostico.id_modelo == modelo_activo.id_modelo
+        ).delete(synchronize_session=False)
+        db.query(Pronostico).filter(
+            Pronostico.id_producto.in_(
+                db.query(Producto.id_producto).filter(Producto.estado == "descontinuado")
+            )
         ).delete(synchronize_session=False)
         db.commit()
 

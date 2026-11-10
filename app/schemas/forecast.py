@@ -30,8 +30,10 @@ class PronosticoSkuResumen(RetailProBaseModel):
     demanda_total_proyectada_14d: float
     probabilidad_quiebre: float
     nivel_incertidumbre: str
-    fecha_generacion: datetime
+    fecha_generacion: Optional[datetime] = None
     version_modelo: str
+    estado: Optional[str] = "activo"
+    pronostico_disponible: bool = True
 
 
 class PronosticoSkuDetalle(RetailProBaseModel):

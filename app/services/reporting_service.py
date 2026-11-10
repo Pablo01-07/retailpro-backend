@@ -283,6 +283,13 @@ class ReportingService:
         q_prod = db.query(Producto)
         if categoria:
             q_prod = q_prod.filter(Producto.categoria == categoria)
+
+        total_filas = q_prod.count()
+        if total_filas > settings.EXPORT_MAX_FILAS:
+            raise ValueError(
+                "La exportación supera el límite de 10000 registros. Reduzca el rango de filtros (por ejemplo, seleccione una categoría) antes de exportar."
+            )
+
         productos = q_prod.order_by(Producto.categoria, Producto.sku).all()
 
         data_rows = []
@@ -401,7 +408,13 @@ class ReportingService:
         if fecha_fin:
             q = q.filter(VentaHistorica.fecha <= fecha_fin)
 
-        records = q.order_by(VentaHistorica.fecha.desc(), Producto.sku).limit(10000).all()
+        total_filas = q.count()
+        if total_filas > settings.EXPORT_MAX_FILAS:
+            raise ValueError(
+                "La exportación supera el límite de 10000 registros. Reduzca el rango de filtros (por ejemplo, seleccione una categoría) antes de exportar."
+            )
+
+        records = q.order_by(VentaHistorica.fecha.desc(), Producto.sku).all()
 
         filename = f"reporte_ventas_{timestamp_str}_{report_id}.{formato}"
         filepath = os.path.join(storage_dir, filename)
@@ -597,6 +610,11 @@ class ReportingService:
             ("Alertas Activas de Quiebre", str(quiebres), "0 críticas", veredicto_quiebres, "SKUs con stock <= punto reorden o cobertura crítica"),
             ("Alertas Activas de Sobrestock", str(sobrestocks), "<= 5", veredicto_sobrestocks, "SKUs con cobertura > umbral configurado")
         ]
+
+        if len(indicadores_summary) > settings.EXPORT_MAX_FILAS:
+            raise ValueError(
+                "La exportación supera el límite de 10000 registros. Reduzca el rango de filtros (por ejemplo, seleccione una categoría) antes de exportar."
+            )
 
         filename = f"reporte_indicadores_{timestamp_str}_{report_id}.{formato}"
         filepath = os.path.join(storage_dir, filename)

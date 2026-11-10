@@ -40,6 +40,8 @@ class Settings(BaseSettings):
 
     POWERBI_EMBED_URL: str = ""
 
+    EXPORT_MAX_FILAS: int = 10000
+
     DEFAULT_DATA_QUALITY_THRESHOLD: float = 98.0
     DEFAULT_STOCKOUT_MIN_PROBABILITY: float = 5.0
     DEFAULT_STOCKOUT_MIN_COVERAGE_DAYS: int = 7

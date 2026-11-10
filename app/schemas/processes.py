@@ -144,3 +144,15 @@ class DetalleEjecucionResponse(RetailProBaseModel):
     duracion_total_segundos: Optional[float] = None
     etapas: List[EtapaProcesoItem]
     detalle_error: Optional[str] = None
+    reintentos: int = 0
+    reintentos_max: int = 3
+    reintento_permitido: bool = False
+
+
+class ReintentoEjecucionResponse(RetailProBaseModel):
+    id_carga: int
+    estado: str
+    reintentos: int
+    reintentos_max: int = 3
+    reintento_permitido: bool
+    mensaje: str

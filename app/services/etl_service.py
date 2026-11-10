@@ -4,6 +4,7 @@ import io
 import time
 from datetime import datetime, timezone, date
 from typing import Optional, Dict, Any, List, Tuple
+from fastapi import HTTPException, status
 import pandas as pd
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -101,7 +102,8 @@ def validate_file_content(
     file_bytes: bytes,
     filename: str,
     tipo_carga: str,
-    user_id: Optional[int] = None
+    user_id: Optional[int] = None,
+    carga_existente: Optional[CargaDatos] = None
 ) -> Tuple[CargaDatos, Dict[str, Any]]:
     inicio_ms = int(time.time() * 1000)
     etapas = []
@@ -359,6 +361,21 @@ def validate_file_content(
                             desglose_errores["formato"] += 1
                             tiene_error = True
 
+        if tipo_carga == "productos" and "estado" in df.columns:
+            val_est = row.get("estado")
+            if pd.notna(val_est) and str(val_est).strip() != "" and str(val_est).strip().lower() not in ["nan", "null", "none"]:
+                st_str = str(val_est).strip().lower()
+                if st_str not in ["activo", "descontinuado"]:
+                    incidencias.append({
+                        "fila": fila_num,
+                        "columna": "estado",
+                        "tipo_error": "formato",
+                        "motivo": f"El campo 'estado' solo admite 'activo' o 'descontinuado' (valor recibido: '{val_est}').",
+                        "valor": str(val_est)
+                    })
+                    desglose_errores["formato"] += 1
+                    tiene_error = True
+
         if tiene_error:
             filas_rechazadas_set.add(idx)
 
@@ -387,19 +404,28 @@ def validate_file_content(
         "detalle": f"Válidos: {total_validos}, Rechazados: {total_rechazados}, Calidad: {porcentaje_calidad}%"
     })
 
-    carga = CargaDatos(
-        id_usuario=user_id,
-        tipo_carga=tipo_carga,
-        fecha_ejecucion=get_utc_now(),
-        estado=estado_carga,
-        registros_procesados=total_procesados,
-        registros_rechazados=total_rechazados,
-        porcentaje_calidad=porcentaje_calidad,
-        detalle_error=detalle_error
-    )
-    db.add(carga)
-    db.commit()
-    db.refresh(carga)
+    if carga_existente:
+        carga = carga_existente
+        carga.estado = estado_carga
+        carga.registros_procesados = total_procesados
+        carga.registros_rechazados = total_rechazados
+        carga.porcentaje_calidad = porcentaje_calidad
+        carga.detalle_error = detalle_error
+        db.commit()
+    else:
+        carga = CargaDatos(
+            id_usuario=user_id,
+            tipo_carga=tipo_carga,
+            fecha_ejecucion=get_utc_now(),
+            estado=estado_carga,
+            registros_procesados=total_procesados,
+            registros_rechazados=total_rechazados,
+            porcentaje_calidad=porcentaje_calidad,
+            detalle_error=detalle_error
+        )
+        db.add(carga)
+        db.commit()
+        db.refresh(carga)
 
     if porcentaje_calidad < calidad_min:
         try:
@@ -435,6 +461,15 @@ def validate_file_content(
     with open(os.path.join(carga_dir, f"archivo_original{ext}"), "wb") as f:
         f.write(file_bytes)
 
+    meta_path = os.path.join(carga_dir, "meta.json")
+    reintentos_prev = 0
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f_prev:
+                reintentos_prev = json.load(f_prev).get("reintentos", 0)
+        except Exception:
+            reintentos_prev = 0
+
     meta_data = {
         "id_carga": carga.id_carga,
         "nombre_archivo": filename,
@@ -442,9 +477,10 @@ def validate_file_content(
         "tamano_bytes": len(file_bytes),
         "tipo_carga": tipo_carga,
         "tipo_carga_etiqueta": get_tipo_carga_etiqueta(tipo_carga),
-        "fecha_subida": get_utc_now().strftime("%Y-%m-%dT%H:%M:%SZ")
+        "fecha_subida": get_utc_now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "reintentos": reintentos_prev
     }
-    with open(os.path.join(carga_dir, "meta.json"), "w", encoding="utf-8") as f:
+    with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta_data, f, indent=4, ensure_ascii=False)
 
     resumen = {
@@ -482,20 +518,21 @@ def validate_file_content(
     with open(os.path.join(carga_dir, "etapas.json"), "w", encoding="utf-8") as f:
         json.dump(etapas, f, indent=4, ensure_ascii=False)
 
-    create_audit_log(
-        db=db,
-        accion=f"carga_archivo_{tipo_carga}",
-        modulo_afectado="datos",
-        id_usuario=user_id,
-        detalle={
-            "id_carga": carga.id_carga,
-            "filename": filename,
-            "estado": carga.estado,
-            "calidad": float(porcentaje_calidad),
-            "procesados": total_procesados,
-            "rechazados": total_rechazados
-        }
-    )
+    if not carga_existente:
+        create_audit_log(
+            db=db,
+            accion=f"carga_archivo_{tipo_carga}",
+            modulo_afectado="datos",
+            id_usuario=user_id,
+            detalle={
+                "id_carga": carga.id_carga,
+                "filename": filename,
+                "estado": carga.estado,
+                "calidad": float(porcentaje_calidad),
+                "procesados": total_procesados,
+                "rechazados": total_rechazados
+            }
+        )
 
     return carga, resumen
 
@@ -563,12 +600,19 @@ def procesar_registros_validos(
     t0 = time.time()
 
     if carga.tipo_carga == "productos":
+        tiene_col_estado = "estado" in df_valid.columns
         for _, row in df_valid.iterrows():
             sku = str(row["sku"]).strip()
             nombre = str(row["nombre"]).strip()
             cat = str(row["categoria"]).strip()
             stock = int(float(row.get("stock_actual", 0))) if pd.notna(row.get("stock_actual")) and str(row.get("stock_actual")).strip() != "" else 0
             reorden = int(float(row.get("punto_reorden", 0))) if pd.notna(row.get("punto_reorden")) and str(row.get("punto_reorden")).strip() != "" else 0
+
+            estado_row = None
+            if tiene_col_estado:
+                val_e = row.get("estado")
+                if pd.notna(val_e) and str(val_e).strip() != "" and str(val_e).strip().lower() in ["activo", "descontinuado"]:
+                    estado_row = str(val_e).strip().lower()
 
             prod = db.query(Producto).filter(Producto.sku == sku).first()
             if prod:
@@ -578,6 +622,11 @@ def procesar_registros_validos(
                     prod.stock_actual = stock
                 if "punto_reorden" in df_valid.columns:
                     prod.punto_reorden = reorden
+                if estado_row is not None:
+                    prod.estado = estado_row
+                    if estado_row == "descontinuado":
+                        from app.models.pronostico import Pronostico
+                        db.query(Pronostico).filter(Pronostico.id_producto == prod.id_producto).delete(synchronize_session=False)
                 existentes_actualizados += 1
             else:
                 prod = Producto(
@@ -586,7 +635,7 @@ def procesar_registros_validos(
                     categoria=cat,
                     stock_actual=stock,
                     punto_reorden=reorden,
-                    estado="activo",
+                    estado=estado_row if estado_row is not None else "activo",
                     fecha_creacion=get_utc_now()
                 )
                 db.add(prod)
@@ -731,6 +780,111 @@ def procesar_registros_validos(
         "existentes_actualizados": existentes_actualizados,
         "estado": carga.estado,
         "estado_display": get_estado_display(carga.estado, carga.registros_rechazados)
+    }
+
+
+def reintentar_ejecucion_carga(
+    db: Session,
+    id_carga: int,
+    user_id: Optional[int] = None
+) -> Dict[str, Any]:
+    carga = db.query(CargaDatos).filter(CargaDatos.id_carga == id_carga).first()
+    if not carga:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ejecución no encontrada"
+        )
+
+    if carga.tipo_carga not in ["ventas", "inventario", "productos"] or carga.estado != "FALLIDO":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Solo se pueden reintentar ejecuciones de carga de datos en estado FALLIDO."
+        )
+
+    carga_dir = get_storage_carga_dir(id_carga)
+    meta_path = os.path.join(carga_dir, "meta.json")
+    meta_data = {}
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta_data = json.load(f)
+        except Exception:
+            meta_data = {}
+
+    reintentos = meta_data.get("reintentos", 0)
+    if reintentos >= 3:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Se alcanzó el límite de 3 reintentos para esta ejecución. Contacte al equipo técnico o espere la siguiente ejecución programada."
+        )
+
+    archivo_original = None
+    if os.path.exists(carga_dir):
+        for f_name in os.listdir(carga_dir):
+            if f_name.startswith("archivo_original"):
+                archivo_original = os.path.join(carga_dir, f_name)
+                break
+
+    if not archivo_original or not os.path.exists(archivo_original):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="El archivo original de esta ejecución no está disponible para reintento."
+        )
+
+    reintentos += 1
+    meta_data["reintentos"] = reintentos
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta_data, f, indent=4, ensure_ascii=False)
+
+    with open(archivo_original, "rb") as f:
+        file_bytes = f.read()
+
+    filename = meta_data.get("nombre_original") or meta_data.get("nombre_archivo") or os.path.basename(archivo_original)
+
+    carga, resumen = validate_file_content(
+        db=db,
+        file_bytes=file_bytes,
+        filename=filename,
+        tipo_carga=carga.tipo_carga,
+        user_id=user_id,
+        carga_existente=carga
+    )
+
+    meta_data["reintentos"] = reintentos
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta_data, f, indent=4, ensure_ascii=False)
+
+    calidad_min = get_calidad_min_threshold(db)
+    if float(carga.porcentaje_calidad) >= calidad_min:
+        procesar_registros_validos(db, carga.id_carga, user_id=user_id)
+        db.refresh(carga)
+        mensaje = "Reintento exitoso: la ejecución se completó correctamente."
+    else:
+        mensaje = f"El reintento no resolvió el problema: {carga.detalle_error}"
+
+    create_audit_log(
+        db=db,
+        accion="Reintento de ejecución",
+        modulo_afectado="procesos",
+        id_usuario=user_id,
+        detalle={
+            "id_carga": carga.id_carga,
+            "tipo_carga": carga.tipo_carga,
+            "reintentos": reintentos,
+            "estado": carga.estado,
+            "porcentaje_calidad": float(carga.porcentaje_calidad),
+            "mensaje": mensaje
+        }
+    )
+
+    reintento_permitido = (carga.estado == "FALLIDO" and reintentos < 3)
+    return {
+        "id_carga": carga.id_carga,
+        "estado": carga.estado,
+        "reintentos": reintentos,
+        "reintentos_max": 3,
+        "reintento_permitido": reintento_permitido,
+        "mensaje": mensaje
     }
 
 

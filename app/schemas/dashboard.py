@@ -67,4 +67,6 @@ class NivelServicioResponse(RetailProBaseModel):
     categoria_filtrada: Optional[str] = None
     sku_filtrado: Optional[str] = None
     periodo_filtrado: Optional[str] = None
+    linea_base_historica_disponible: bool = False
+    mensaje_linea_base: Optional[str] = None
     por_categoria: List[NivelServicioCategoriaItem]

@@ -18,7 +18,8 @@ from app.schemas.processes import (
     ProcesoConfigItemResponse,
     ProcesoItemResponse,
     DetalleEjecucionResponse,
-    EtapaProcesoItem
+    EtapaProcesoItem,
+    ReintentoEjecucionResponse
 )
 from app.services.scheduler import (
     get_procesos_config,
@@ -34,7 +35,12 @@ from app.services.scheduler import (
     PROCESOS_METADATA,
     scheduler
 )
-from app.services.etl_service import get_carga_nombre_archivo, get_tipo_carga_etiqueta, get_calidad_min_threshold
+from app.services.etl_service import (
+    get_carga_nombre_archivo,
+    get_tipo_carga_etiqueta,
+    get_calidad_min_threshold,
+    reintentar_ejecucion_carga
+)
 
 router = APIRouter(prefix="/procesos", tags=["Monitoreo y Configuración de Procesos Batch"])
 
@@ -548,6 +554,22 @@ def get_detalle_ejecucion(
         except Exception:
             pass
 
+    meta_path = os.path.join(carga_dir, "meta.json")
+    reintentos = 0
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f_meta:
+                reintentos = json.load(f_meta).get("reintentos", 0)
+        except Exception:
+            reintentos = 0
+
+    reintentos_max = 3
+    reintento_permitido = (
+        carga.estado == "FALLIDO" and
+        carga.tipo_carga in ["ventas", "inventario", "productos"] and
+        reintentos < reintentos_max
+    )
+
     return DetalleEjecucionResponse(
         id_carga=carga.id_carga,
         tipo_proceso=carga.tipo_carga,
@@ -560,5 +582,21 @@ def get_detalle_ejecucion(
         porcentaje_calidad=float(carga.porcentaje_calidad),
         duracion_total_segundos=round(duracion_total, 2) if duracion_total else None,
         etapas=etapas,
-        detalle_error=carga.detalle_error
+        detalle_error=carga.detalle_error,
+        reintentos=reintentos,
+        reintentos_max=reintentos_max,
+        reintento_permitido=reintento_permitido
     )
+
+
+@router.post("/{id_carga}/reintentar", response_model=ReintentoEjecucionResponse)
+def reintentar_ejecucion_endpoint(
+    id_carga: int,
+    db: Session = Depends(get_db),
+    current_admin: Usuario = Depends(require_roles([RoleCode.ADMIN]))
+):
+    """
+    Reintenta la validación y carga de una ejecución batch fallida.
+    Solo rol Administrador. Máximo 3 reintentos permitidos.
+    """
+    return reintentar_ejecucion_carga(db=db, id_carga=id_carga, user_id=current_admin.id_usuario)

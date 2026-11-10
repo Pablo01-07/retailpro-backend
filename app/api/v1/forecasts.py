@@ -26,6 +26,7 @@ router = APIRouter(prefix="/pronosticos", tags=["Pronósticos de Ventas"])
 @router.get("", response_model=PronosticoListResponse)
 def list_pronosticos_resumen(
     categoria: Optional[str] = Query(None, description="Filtrar por categoría de producto"),
+    incluir_sin_pronostico: bool = Query(False, description="Incluir productos sin pronóstico vigente"),
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_roles([RoleCode.ADMIN, RoleCode.ANALYST, RoleCode.LOGISTICS]))
 ):
@@ -33,19 +34,59 @@ def list_pronosticos_resumen(
     Lista el resumen de pronósticos activos a 14 días para todos los SKUs (Pantalla 10).
     """
     modelo_activo = db.query(ModeloVersion).filter(ModeloVersion.estado == "ACTIVA").first()
-    if not modelo_activo:
-        return PronosticoListResponse(total_skus=0, fecha_generacion=None, version_modelo=None, items=[])
-
     q_prod = db.query(Producto)
     if categoria:
         q_prod = q_prod.filter(Producto.categoria == categoria)
     productos = q_prod.all()
+
+    if not modelo_activo:
+        if incluir_sin_pronostico:
+            items = [
+                PronosticoSkuResumen(
+                    id_producto=prod.id_producto,
+                    sku=prod.sku,
+                    nombre_producto=prod.nombre,
+                    categoria=prod.categoria,
+                    stock_actual=prod.stock_actual,
+                    punto_reorden=prod.punto_reorden,
+                    demanda_total_proyectada_14d=0.0,
+                    probabilidad_quiebre=0.0,
+                    nivel_incertidumbre="N/D",
+                    fecha_generacion=None,
+                    version_modelo="N/A",
+                    estado=prod.estado,
+                    pronostico_disponible=False
+                )
+                for prod in productos
+            ]
+            return PronosticoListResponse(total_skus=len(items), fecha_generacion=None, version_modelo=None, items=items)
+        return PronosticoListResponse(total_skus=0, fecha_generacion=None, version_modelo=None, items=[])
 
     max_fecha_gen = db.query(func.max(Pronostico.fecha_generacion)).filter(
         Pronostico.id_modelo == modelo_activo.id_modelo
     ).scalar()
 
     if not max_fecha_gen:
+        if incluir_sin_pronostico:
+            items = [
+                PronosticoSkuResumen(
+                    id_producto=prod.id_producto,
+                    sku=prod.sku,
+                    nombre_producto=prod.nombre,
+                    categoria=prod.categoria,
+                    stock_actual=prod.stock_actual,
+                    punto_reorden=prod.punto_reorden,
+                    demanda_total_proyectada_14d=0.0,
+                    probabilidad_quiebre=0.0,
+                    nivel_incertidumbre="N/D",
+                    fecha_generacion=None,
+                    version_modelo=modelo_activo.version,
+                    estado=prod.estado,
+                    pronostico_disponible=False
+                )
+                for prod in productos
+            ]
+            return PronosticoListResponse(total_skus=len(items), fecha_generacion=None, version_modelo=modelo_activo.version, items=items)
         return PronosticoListResponse(total_skus=0, fecha_generacion=None, version_modelo=modelo_activo.version, items=[])
 
     pronosticos = db.query(Pronostico).filter(
@@ -63,6 +104,23 @@ def list_pronosticos_resumen(
     for prod in productos:
         p_list = pron_by_prod.get(prod.id_producto, [])
         if not p_list:
+            if not incluir_sin_pronostico:
+                continue
+            items.append(PronosticoSkuResumen(
+                id_producto=prod.id_producto,
+                sku=prod.sku,
+                nombre_producto=prod.nombre,
+                categoria=prod.categoria,
+                stock_actual=prod.stock_actual,
+                punto_reorden=prod.punto_reorden,
+                demanda_total_proyectada_14d=0.0,
+                probabilidad_quiebre=0.0,
+                nivel_incertidumbre="N/D",
+                fecha_generacion=None,
+                version_modelo=modelo_activo.version,
+                estado=prod.estado,
+                pronostico_disponible=False
+            ))
             continue
 
         p_list = sorted(p_list, key=lambda x: x.horizonte_dias)
@@ -87,7 +145,9 @@ def list_pronosticos_resumen(
             probabilidad_quiebre=prob_quiebre,
             nivel_incertidumbre=nivel_pred,
             fecha_generacion=fecha_gen,
-            version_modelo=modelo_activo.version
+            version_modelo=modelo_activo.version,
+            estado=prod.estado,
+            pronostico_disponible=True
         ))
 
     return PronosticoListResponse(
@@ -197,6 +257,12 @@ def get_pronostico_detalle_sku(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Producto con identificador o SKU '{sku_or_id}' no encontrado."
+        )
+
+    if str(prod.estado).lower() == "descontinuado":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No se generan pronósticos para productos descontinuados"
         )
 
     modelo_activo = db.query(ModeloVersion).filter(ModeloVersion.estado == "ACTIVA").first()
