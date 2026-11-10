@@ -116,8 +116,20 @@ def actualizar_umbrales_configuracion(
     Dispara automáticamente el recálculo y sincronización de las alertas.
     Solo permitido para el rol 'administrador'.
     """
+    data_in = payload.model_dump(exclude_unset=True)
+    umbrales_guardados = {u.tipo_umbral: float(u.valor) for u in db.query(UmbralConfiguracion).all()}
+
+    res_sobrestock_dias = float(data_in["sobrestock_dias"]) if "sobrestock_dias" in data_in and data_in["sobrestock_dias"] is not None else umbrales_guardados.get("sobrestock_dias", 90.0)
+    res_quiebre_dias = float(data_in["quiebre_dias_cobertura"]) if "quiebre_dias_cobertura" in data_in and data_in["quiebre_dias_cobertura"] is not None else umbrales_guardados.get("quiebre_dias_cobertura", 7.0)
+
+    if res_sobrestock_dias <= res_quiebre_dias:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El umbral de sobrestock debe ser mayor al umbral de quiebre: los días máximos de cobertura en almacén deben ser mayores a los días de cobertura mínima."
+        )
+
     cambios = {}
-    for campo, val in payload.model_dump(exclude_unset=True).items():
+    for campo, val in data_in.items():
         if val is not None:
             u = db.query(UmbralConfiguracion).filter(UmbralConfiguracion.tipo_umbral == campo).first()
             if u:

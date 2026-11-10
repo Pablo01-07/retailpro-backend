@@ -28,6 +28,7 @@ class ExportarReporteRequest(RetailProBaseModel):
     formato: str = Field(..., description="Formato: 'csv', 'xlsx', 'pdf'")
     tipo_reporte: str = Field("pronostico_reposicion", description="Tipo: 'pronostico_reposicion', 'inventario', 'ventas', 'indicadores'")
     categoria: Optional[str] = None
+    sku: Optional[str] = None
 
 
 class ExportarReporteConFiltrosRequest(RetailProBaseModel):

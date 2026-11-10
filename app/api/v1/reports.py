@@ -38,13 +38,14 @@ def get_historial_reportes(
 @router.get("/pronostico/preview", response_model=ReportePreviewResponse)
 def get_reporte_preview(
     categoria: Optional[str] = Query(None, description="Filtrar por categoría"),
+    sku: Optional[str] = Query(None, description="Filtrar por SKU"),
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_roles([RoleCode.ADMIN, RoleCode.ANALYST, RoleCode.LOGISTICS]))
 ):
     """
     Vista previa de 14 días para el Centro de Reportes y Exportación (Pantalla 20 y 21).
     """
-    return ReportingService.get_preview_data(db=db, categoria=categoria)
+    return ReportingService.get_preview_data(db=db, categoria=categoria, sku=sku)
 
 
 @router.post("/pronostico/export", response_model=ExportarReporteResponse)
@@ -62,7 +63,8 @@ def exportar_reporte_pronostico(
             db=db,
             formato=payload.formato,
             user_id=current_user.id_usuario,
-            categoria=payload.categoria
+            categoria=payload.categoria,
+            sku=payload.sku
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))

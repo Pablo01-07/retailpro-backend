@@ -3,6 +3,7 @@ import csv
 import uuid
 import math
 from datetime import datetime, date, timedelta
+from zoneinfo import ZoneInfo
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
@@ -39,7 +40,12 @@ class ReportingService:
         return rep_dir
 
     @classmethod
-    def get_preview_data(cls, db: Session, categoria: Optional[str] = None) -> ReportePreviewResponse:
+    def get_preview_data(
+        cls,
+        db: Session,
+        categoria: Optional[str] = None,
+        sku: Optional[str] = None
+    ) -> ReportePreviewResponse:
         modelo_activo = db.query(ModeloVersion).filter(ModeloVersion.estado == "ACTIVA").first()
         if not modelo_activo:
             return ReportePreviewResponse(total_registros=0, fecha_generacion=datetime.utcnow(), items=[])
@@ -61,6 +67,8 @@ class ReportingService:
         q_prod = db.query(Producto)
         if categoria:
             q_prod = q_prod.filter(Producto.categoria == categoria)
+        if sku:
+            q_prod = q_prod.filter(Producto.sku == sku.strip().upper())
         productos = q_prod.all()
 
         items = []
@@ -180,15 +188,19 @@ class ReportingService:
         db: Session,
         formato: str,
         user_id: int,
-        categoria: Optional[str] = None
+        categoria: Optional[str] = None,
+        sku: Optional[str] = None
     ) -> ExportarReporteResponse:
         storage_dir = cls.ensure_storage_dir()
         formato = formato.lower().strip()
-        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp_str = datetime.now(ZoneInfo("America/Lima")).strftime("%Y%m%d_%H%M%S")
         report_id = str(uuid.uuid4())[:8]
 
-        preview_data = cls.get_preview_data(db, categoria)
+        preview_data = cls.get_preview_data(db, categoria=categoria, sku=sku)
         items = preview_data.items
+
+        if not items:
+            raise ValueError("No hay datos para los filtros seleccionados. Ajuste los filtros antes de exportar.")
 
         filename = f"reporte_pronostico_{timestamp_str}_{report_id}.{formato}"
         filepath = os.path.join(storage_dir, filename)
@@ -217,6 +229,7 @@ class ReportingService:
                 "nombre_archivo": filename,
                 "tamano_bytes": tamano_bytes,
                 "categoria_filtro": categoria,
+                "sku_filtro": sku.strip().upper() if sku else None,
                 "total_registros": len(items)
             }
         )
@@ -246,7 +259,7 @@ class ReportingService:
     ) -> ExportarReporteResponse:
         storage_dir = cls.ensure_storage_dir()
         formato = formato.lower().strip()
-        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp_str = datetime.now(ZoneInfo("America/Lima")).strftime("%Y%m%d_%H%M%S")
         report_id = str(uuid.uuid4())[:8]
 
         umbrales = AlertService.get_thresholds_dict(db)
@@ -322,7 +335,7 @@ class ReportingService:
             cls._export_pdf_generic(
                 filepath=filepath,
                 titulo="FasRetail - Reporte de Inventario y Cobertura",
-                subtitulo=f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')} | Total SKUs: {len(data_rows)}",
+                subtitulo=f"Generado: {datetime.now(ZoneInfo('America/Lima')).strftime('%d/%m/%Y %H:%M')} | Total SKUs: {len(data_rows)}",
                 headers=["SKU", "Producto", "Cat.", "Stock", "Cob.(d)", "P.Reorden", "Alerta"],
                 col_widths=[60, 160, 50, 50, 55, 60, 65],
                 rows=[[r["sku"], r["producto"][:22], r["categoria"][:6], str(r["stock_actual"]), str(r["cobertura_dias"]), str(r["punto_reorden"]), r["estado_alerta"]] for r in data_rows[:60]]
@@ -369,7 +382,7 @@ class ReportingService:
     ) -> ExportarReporteResponse:
         storage_dir = cls.ensure_storage_dir()
         formato = formato.lower().strip()
-        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp_str = datetime.now(ZoneInfo("America/Lima")).strftime("%Y%m%d_%H%M%S")
         report_id = str(uuid.uuid4())[:8]
 
         q = db.query(
@@ -436,7 +449,7 @@ class ReportingService:
             cls._export_pdf_generic(
                 filepath=filepath,
                 titulo="FasRetail - Reporte Ejecutivo de Ventas",
-                subtitulo=f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')} | Total Transacciones: {len(records)}",
+                subtitulo=f"Generado: {datetime.now(ZoneInfo('America/Lima')).strftime('%d/%m/%Y %H:%M')} | Total Transacciones: {len(records)}",
                 headers=["SKU", "Producto", "Cat.", "Unidades Vendidas", "Ingreso Acumulado"],
                 col_widths=[65, 180, 60, 95, 100],
                 rows=filas_pdf
@@ -520,7 +533,7 @@ class ReportingService:
     ) -> ExportarReporteResponse:
         storage_dir = cls.ensure_storage_dir()
         formato = formato.lower().strip()
-        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp_str = datetime.now(ZoneInfo("America/Lima")).strftime("%Y%m%d_%H%M%S")
         report_id = str(uuid.uuid4())[:8]
 
         modelo_activo = db.query(ModeloVersion).filter(ModeloVersion.estado == "ACTIVA").first()
@@ -612,7 +625,7 @@ class ReportingService:
             cls._export_pdf_generic(
                 filepath=filepath,
                 titulo="FasRetail - Reporte de Indicadores de Rendimiento",
-                subtitulo=f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')} | Versión Modelo: {modelo_activo.version if modelo_activo else 'N/A'} | Veredicto MAPE: {veredicto_mape}",
+                subtitulo=f"Generado: {datetime.now(ZoneInfo('America/Lima')).strftime('%d/%m/%Y %H:%M')} | Versión Modelo: {modelo_activo.version if modelo_activo else 'N/A'} | Veredicto MAPE: {veredicto_mape}",
                 headers=["Indicador", "Valor", "Meta", "Estado", "Descripción"],
                 col_widths=[140, 60, 65, 65, 170],
                 rows=[[ind[0], ind[1], ind[2], ind[3], ind[4]] for ind in indicadores_summary]
@@ -729,7 +742,7 @@ class ReportingService:
         )
 
         elements.append(Paragraph("FasRetail - Reporte Ejecutivo de Pronóstico y Reposición", title_style))
-        elements.append(Paragraph(f"Generado el: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')} | Total SKUs: {len(items)}", subtitle_style))
+        elements.append(Paragraph(f"Generado el: {datetime.now(ZoneInfo('America/Lima')).strftime('%d/%m/%Y %H:%M:%S')} | Total SKUs: {len(items)}", subtitle_style))
         elements.append(Spacer(1, 15))
 
         table_data = [[

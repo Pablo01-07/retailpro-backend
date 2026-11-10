@@ -141,6 +141,25 @@ def test_umbrales_get_and_put_admin(client, admin_token, db_session):
     assert float(u10.valor) == 10.0
 
 
+def test_actualizar_umbrales_inconsistentes_422(client, admin_token, db_session):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    u_sob_antes = db_session.query(UmbralConfiguracion).filter(UmbralConfiguracion.tipo_umbral == "sobrestock_dias").first()
+    u_qbr_antes = db_session.query(UmbralConfiguracion).filter(UmbralConfiguracion.tipo_umbral == "quiebre_dias_cobertura").first()
+    val_sob_antes = float(u_sob_antes.valor) if u_sob_antes else 90.0
+    val_qbr_antes = float(u_qbr_antes.valor) if u_qbr_antes else 7.0
+
+    payload = {"sobrestock_dias": 20.0, "quiebre_dias_cobertura": 30.0}
+    resp = client.put("/api/v1/umbrales", headers=headers, json=payload)
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "El umbral de sobrestock debe ser mayor al umbral de quiebre: los días máximos de cobertura en almacén deben ser mayores a los días de cobertura mínima."
+
+    db_session.expire_all()
+    u_sob_despues = db_session.query(UmbralConfiguracion).filter(UmbralConfiguracion.tipo_umbral == "sobrestock_dias").first()
+    u_qbr_despues = db_session.query(UmbralConfiguracion).filter(UmbralConfiguracion.tipo_umbral == "quiebre_dias_cobertura").first()
+    assert float(u_sob_despues.valor) == val_sob_antes
+    assert float(u_qbr_despues.valor) == val_qbr_antes
+
+
 def test_dashboard_and_nivel_servicio(client, logistics_token, phase4_seed):
     headers = {"Authorization": f"Bearer {logistics_token}"}
 
@@ -200,6 +219,32 @@ def test_reportes_preview_and_exports(client, analyst_token, phase4_seed):
     resp_dl = client.get(url_descarga, headers=headers)
     assert resp_dl.status_code == 200
     assert len(resp_dl.content) > 0
+
+
+def test_reportes_preview_filtro_sku(client, analyst_token, phase4_seed):
+    headers = {"Authorization": f"Bearer {analyst_token}"}
+    resp = client.get("/api/v1/reportes/pronostico/preview?sku=PH4-001", headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_registros"] >= 1
+    assert all(item["sku"] == "PH4-001" for item in data["items"])
+
+    resp_inexistente = client.get("/api/v1/reportes/pronostico/preview?sku=SKU-NO-EXISTE", headers=headers)
+    assert resp_inexistente.status_code == 200
+    data_inexistente = resp_inexistente.json()
+    assert data_inexistente["total_registros"] == 0
+    assert len(data_inexistente["items"]) == 0
+
+
+def test_reportes_exportar_sin_datos_400(client, analyst_token, phase4_seed):
+    headers = {"Authorization": f"Bearer {analyst_token}"}
+    resp_sku = client.post("/api/v1/reportes/pronostico/export", headers=headers, json={"formato": "csv", "sku": "SKU-NO-EXISTE"})
+    assert resp_sku.status_code == 400
+    assert resp_sku.json()["detail"] == "No hay datos para los filtros seleccionados. Ajuste los filtros antes de exportar."
+
+    resp_cat = client.post("/api/v1/reportes/pronostico/export", headers=headers, json={"formato": "csv", "categoria": "Lacteos", "sku": "PH4-001"})
+    assert resp_cat.status_code == 400
+    assert resp_cat.json()["detail"] == "No hay datos para los filtros seleccionados. Ajuste los filtros antes de exportar."
 
 
 def test_rbac_logistics_restricted_actions(client, logistics_token, db_session, phase4_seed):
