@@ -29,14 +29,17 @@ def main():
         rmses = [r["rmse"] for r in backtest_results]
         maes = [r["mae"] for r in backtest_results]
         wapes = [r["wape"] for r in backtest_results]
+        mapes_14d = [r["mape_14d"] for r in backtest_results if "mape_14d" in r and r["mape_14d"] is not None]
 
         avg_mape = round(sum(mapes) / len(mapes), 2)
         avg_rmse = round(sum(rmses) / len(rmses), 4)
         avg_mae = round(sum(maes) / len(maes), 4)
         avg_wape = round(sum(wapes) / len(wapes), 2)
+        avg_mape_14d = round(sum(mapes_14d) / len(mapes_14d), 2) if mapes_14d else None
 
         out_of_sample_metrics = {
             "mape": avg_mape,
+            "mape_14d": avg_mape_14d,
             "wape": avg_wape,
             "rmse": avg_rmse,
             "mae": avg_mae
@@ -46,6 +49,7 @@ def main():
         print("MÉTRICAS DEL BACKTEST WALK-FORWARD (12 CORTES - FUERA DE MUESTRA)")
         print("=" * 75)
         print(f"MAPE Promedio Histórico (y > 0): {avg_mape}%")
+        print(f"MAPE 14d Acumulado Promedio:     {avg_mape_14d}% (Meta: <= 15%)")
         print(f"WAPE Promedio Histórico:         {avg_wape}%")
         print(f"RMSE Promedio Histórico:         {avg_rmse}")
         print(f"MAE Promedio Histórico:          {avg_mae}")

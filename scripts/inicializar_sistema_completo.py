@@ -264,9 +264,11 @@ def main():
         wapes = [r["wape"] for r in backtest_results]
         rmses = [r["rmse"] for r in backtest_results]
         maes = [r["mae"] for r in backtest_results]
+        mapes_14d = [r["mape_14d"] for r in backtest_results if "mape_14d" in r and r["mape_14d"] is not None]
 
         out_of_sample_metrics = {
             "mape": round(sum(mapes) / len(mapes), 2),
+            "mape_14d": round(sum(mapes_14d) / len(mapes_14d), 2) if mapes_14d else None,
             "wape": round(sum(wapes) / len(wapes), 2),
             "rmse": round(sum(rmses) / len(rmses), 4),
             "mae": round(sum(maes) / len(maes), 4)

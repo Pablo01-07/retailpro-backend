@@ -436,6 +436,19 @@ class MLForecastService:
             "mape": mape
         }
 
+    @staticmethod
+    def mape_14d(df_val: pd.DataFrame) -> float:
+        if df_val.empty or "id_producto" not in df_val.columns or "y_real" not in df_val.columns or "y_pred" not in df_val.columns:
+            return 0.0
+        totales = df_val.groupby("id_producto")[["y_real", "y_pred"]].sum()
+        validos = totales[totales["y_real"] != 0]
+        if validos.empty:
+            return 0.0
+        errores_pct = (validos["y_real"] - validos["y_pred"]).abs() / validos["y_real"] * 100.0
+        return round(float(errores_pct.mean()), 2)
+
+    calcular_mape_14d = mape_14d
+
     @classmethod
     def tune_hyperparameters_temporal(cls, df_train: pd.DataFrame) -> Dict[str, Any]:
         cutoffs_train = sorted(df_train["cutoff_date"].unique())
@@ -557,6 +570,7 @@ class MLForecastService:
             all_y_ma28.extend(preds_ma28)
 
             metrics_xgb = cls.calculate_metrics(y_val_real, preds_xgb)
+            corte_mape_14d = cls.mape_14d(df_val)
 
             version_str = f"v0.backtest.{idx:02d}"
             db.query(ModeloVersion).filter(ModeloVersion.version == version_str).delete()
@@ -569,6 +583,7 @@ class MLForecastService:
                 mae=metrics_xgb["mae"],
                 mape=metrics_xgb["mape"],
                 rmse=metrics_xgb["rmse"],
+                mape_14d=corte_mape_14d,
                 estado="DESCARTADA"
             )
             db.add(mv)
@@ -629,9 +644,10 @@ class MLForecastService:
                 "rmse": metrics_xgb["rmse"],
                 "mape": metrics_xgb["mape"],
                 "wape": metrics_xgb["wape"],
+                "mape_14d": corte_mape_14d,
                 "duracion_s": round(t_corte_end - t_corte_start, 2)
             })
-            print(f"  [+] Corte {idx:02d} ({corte.isoformat()}): MAPE={metrics_xgb['mape']}% | WAPE={metrics_xgb['wape']}% | RMSE={metrics_xgb['rmse']} ({round(t_corte_end - t_corte_start, 2)}s)")
+            print(f"  [+] Corte {idx:02d} ({corte.isoformat()}): MAPE={metrics_xgb['mape']}% | MAPE_14D={corte_mape_14d}% | WAPE={metrics_xgb['wape']}% | RMSE={metrics_xgb['rmse']} ({round(t_corte_end - t_corte_start, 2)}s)")
 
         percentiles_relativos: Dict[str, Tuple[float, float]] = {}
         for cat, residuals in residuos_rel_diarios_cat.items():
@@ -660,7 +676,11 @@ class MLForecastService:
 
         cobertura_empirica = round((aciertos_reales / idx_eval * 100.0), 2) if idx_eval > 0 else 94.72
 
+        mapes_14d = [b["mape_14d"] for b in backtest_results if "mape_14d" in b and b["mape_14d"] is not None]
+        avg_mape_14d = round(float(np.mean(mapes_14d)), 2) if mapes_14d else 0.0
+
         met_xgb_global = cls.calculate_metrics(np.array(all_y_true), np.array(all_y_xgb))
+        met_xgb_global["mape_14d"] = avg_mape_14d
         met_naive_global = cls.calculate_metrics(np.array(all_y_true), np.array(all_y_naive))
         met_ma28_global = cls.calculate_metrics(np.array(all_y_true), np.array(all_y_ma28))
 
@@ -668,7 +688,8 @@ class MLForecastService:
             "xgboost": met_xgb_global,
             "naive_estacional": met_naive_global,
             "media_movil_28d": met_ma28_global,
-            "cobertura_empirica_95": cobertura_empirica
+            "cobertura_empirica_95": cobertura_empirica,
+            "mape_14d_promedio": avg_mape_14d
         }
 
         print(f"[+] Backtest culminado en {round(time.time() - t_start, 2)}s.")
@@ -841,9 +862,10 @@ class MLForecastService:
             version=nueva_version,
             fecha_entrenamiento=datetime.utcnow(),
             motivo_entrenamiento=motivo,
-            mae=out_of_sample_metrics["mae"],
-            mape=out_of_sample_metrics["mape"],
-            rmse=out_of_sample_metrics["rmse"],
+            mae=out_of_sample_metrics.get("mae"),
+            mape=out_of_sample_metrics.get("mape"),
+            rmse=out_of_sample_metrics.get("rmse"),
+            mape_14d=out_of_sample_metrics.get("mape_14d"),
             estado="ACTIVA"
         )
         db.add(mv_prod)
@@ -858,14 +880,27 @@ class MLForecastService:
             json.dump({
                 "percentiles_relativos": percentiles_relativos,
                 "residuos_rel_acum_cat": residuos_rel_acum_cat,
-                "cobertura_secuencial_fuera_muestra": cob_oos
+                "cobertura_secuencial_fuera_muestra": cob_oos,
+                "mape_14d": out_of_sample_metrics.get("mape_14d")
+            }, f, indent=4, ensure_ascii=False)
+
+        with open(os.path.join(settings.STORAGE_DIR, "modelos", "metricas_modelo.json"), "w", encoding="utf-8") as f:
+            json.dump({
+                "version": mv_prod.version,
+                "id_modelo": mv_prod.id_modelo,
+                "mae": float(mv_prod.mae) if mv_prod.mae else None,
+                "mape": float(mv_prod.mape) if mv_prod.mape else None,
+                "rmse": float(mv_prod.rmse) if mv_prod.rmse else None,
+                "mape_14d": float(mv_prod.mape_14d) if mv_prod.mape_14d else None,
+                "wape": out_of_sample_metrics.get("wape"),
+                "cobertura_intervalo_95": cob_oos
             }, f, indent=4, ensure_ascii=False)
 
         fecha_gen = datetime.combine(max_date, datetime.min.time())
         pronosticos_prod = []
         feature_names = cls.FEATURE_COLS
         lead_time = settings.DEFAULT_LEAD_TIME_DAYS
-        niveles_incertidumbre_sku = calcular_niveles_incertidumbre_por_sku(db=db, df_ventas=df_merged)
+        niveles_incertidumbre_sku = calcular_niveles_incertidumbre_por_sku(db=db, df_ventas=df_grid)
 
         resumen_cobertura = []
         ids_insuf = cls.obtener_ids_productos_con_historial_insuficiente(db)
@@ -1001,6 +1036,7 @@ class MLForecastService:
             "mae": float(mv_prod.mae) if mv_prod.mae else None,
             "mape": float(mv_prod.mape) if mv_prod.mape else None,
             "rmse": float(mv_prod.rmse) if mv_prod.rmse else None,
+            "mape_14d": float(mv_prod.mape_14d) if mv_prod.mape_14d is not None else None,
             "wape": out_of_sample_metrics.get("wape"),
             "duracion_segundos": duracion_total,
             "total_pronosticos_generados": len(pronosticos_prod),

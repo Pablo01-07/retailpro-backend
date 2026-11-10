@@ -26,7 +26,7 @@ class DashboardService:
     @classmethod
     def get_dashboard_resumen(cls, db: Session) -> DashboardResumenResponse:
         modelo_activo = db.query(ModeloVersion).filter(ModeloVersion.estado == "ACTIVA").first()
-        mape_global = float(modelo_activo.mape) if (modelo_activo and modelo_activo.mape is not None) else None
+        mape_global = float(modelo_activo.mape_14d) if (modelo_activo and modelo_activo.mape_14d is not None) else (float(modelo_activo.mape) if (modelo_activo and modelo_activo.mape is not None) else None)
 
         demanda_total_proy = 0.0
         pronosticos_activos = []
@@ -100,7 +100,9 @@ class DashboardService:
         tendencia_demanda = round(((demanda_total_proy - total_ventas_14d_hist) / total_ventas_14d_hist * 100.0), 1) if total_ventas_14d_hist > 0 else 0.0
 
         modelo_ant = db.query(ModeloVersion).filter(ModeloVersion.estado == "ANTERIOR").order_by(ModeloVersion.id_modelo.desc()).first()
-        tendencia_mape = round(float(modelo_activo.mape) - float(modelo_ant.mape), 2) if (modelo_activo and modelo_ant and modelo_activo.mape is not None and modelo_ant.mape is not None) else None
+        mape_activo_val = float(modelo_activo.mape_14d) if (modelo_activo and modelo_activo.mape_14d is not None) else (float(modelo_activo.mape) if (modelo_activo and modelo_activo.mape is not None) else None)
+        mape_ant_val = float(modelo_ant.mape_14d) if (modelo_ant and modelo_ant.mape_14d is not None) else (float(modelo_ant.mape) if (modelo_ant and modelo_ant.mape is not None) else None)
+        tendencia_mape = round(mape_activo_val - mape_ant_val, 2) if (mape_activo_val is not None and mape_ant_val is not None) else None
 
         precios_avg = dict(db.query(VentaHistorica.id_producto, func.avg(VentaHistorica.precio_unitario)).group_by(VentaHistorica.id_producto).all())
         valor_inventario_total = sum(p.stock_actual * float(precios_avg.get(p.id_producto, 0.0)) for p in productos)

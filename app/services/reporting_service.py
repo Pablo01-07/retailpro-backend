@@ -605,7 +605,7 @@ class ReportingService:
         report_id = str(uuid.uuid4())[:8]
 
         modelo_activo = db.query(ModeloVersion).filter(ModeloVersion.estado == "ACTIVA").first()
-        mape_val = float(modelo_activo.mape) if modelo_activo and modelo_activo.mape is not None else None
+        mape_val = float(modelo_activo.mape_14d) if modelo_activo and modelo_activo.mape_14d is not None else (float(modelo_activo.mape) if modelo_activo and modelo_activo.mape is not None else None)
         wape_val = cls.calcular_wape_fuera_muestra(db)
         rmse_val = float(modelo_activo.rmse) if modelo_activo and modelo_activo.rmse is not None else None
         mae_val = float(modelo_activo.mae) if modelo_activo and modelo_activo.mae is not None else None

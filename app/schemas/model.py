@@ -20,6 +20,7 @@ class FichaModeloResponse(RetailProBaseModel):
     mape: Optional[float] = None
     rmse: Optional[float] = None
     wape: Optional[float] = None
+    mape_14d: Optional[float] = None
     cobertura_intervalo_95: Optional[float] = None
     umbral_mape_max: float = 15.0
     cumple_meta: bool = True
@@ -36,6 +37,7 @@ class ModeloHistorialItem(RetailProBaseModel):
     mape: Optional[float] = None
     rmse: Optional[float] = None
     wape: Optional[float] = None
+    mape_14d: Optional[float] = None
     estado: str
 
 
@@ -43,6 +45,7 @@ class MapeMensualMonitoreoItem(RetailProBaseModel):
     periodo: str
     corte: str
     mape: float
+    mape_14d: Optional[float] = None
     rmse: float
     mae: float
     umbral_mape: float = 15.0
@@ -52,6 +55,8 @@ class MapeMensualMonitoreoItem(RetailProBaseModel):
 class ModeloMonitoreoResponse(RetailProBaseModel):
     version_activa: str
     mape_promedio_historico: float
+    mape_14d: Optional[float] = None
+    mape_14d_promedio_historico: Optional[float] = None
     umbral_mape_max: float = 15.0
     alerta_degradacion: bool
     total_cortes_evaluados: int
@@ -62,3 +67,16 @@ class ModeloMonitoreoResponse(RetailProBaseModel):
 
 class EntrenarModeloRequest(RetailProBaseModel):
     motivo: Optional[str] = "reentrenamiento_manual"
+
+
+class ReevaluarModeloResponse(RetailProBaseModel):
+    mensaje: str
+    id_modelo: int
+    version: str
+    mape_14d: Optional[float] = None
+    mape: Optional[float] = None
+    mae: Optional[float] = None
+    rmse: Optional[float] = None
+    wape: Optional[float] = None
+    cobertura_intervalo_95: Optional[float] = None
+    cortes_evaluados: int
