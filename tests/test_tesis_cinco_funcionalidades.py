@@ -287,7 +287,7 @@ def test_linea_base_historica_disponible_false(client, analyst_token, db_session
     data = resp.json()
 
     assert data["linea_base_historica_disponible"] is False
-    assert data["mensaje_linea_base"] == "Línea base histórica no disponible: no existen saldos diarios históricos de inventario; el nivel proyectado se compara contra la meta referencial."
+    assert data["mensaje_linea_base"] == "No existen saldos diarios históricos de inventario; el nivel de servicio proyectado se compara contra la meta referencial."
 
 
 def test_limite_exportacion_superado_400(client, analyst_token, db_session, monkeypatch):
@@ -337,3 +337,66 @@ def test_limite_exportacion_superado_400(client, analyst_token, db_session, monk
     resp_ok = client.post("/api/v1/reportes/ventas/export", headers=headers, json=payload)
     assert resp_ok.status_code == 200
     assert resp_ok.json()["nombre_archivo"].endswith(".csv")
+
+
+def test_procesar_registros_validos_actualiza_detalle_error(client, admin_token, db_session):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    prod = Producto(
+        sku="SKU-PROC-01",
+        nombre="Producto Proc",
+        categoria="Abarrotes",
+        stock_actual=10,
+        punto_reorden=5,
+        estado="activo"
+    )
+    db_session.add(prod)
+    db_session.commit()
+
+    c_limpio = CargaDatos(
+        tipo_carga="inventario",
+        fecha_ejecucion=datetime.utcnow(),
+        estado="PENDIENTE",
+        registros_procesados=1,
+        registros_rechazados=0,
+        porcentaje_calidad=100.0,
+        detalle_error="Pendiente de consolidación."
+    )
+    db_session.add(c_limpio)
+    db_session.commit()
+
+    dir_limpio = get_storage_carga_dir(c_limpio.id_carga)
+    with open(os.path.join(dir_limpio, "archivo_original.csv"), "w", encoding="utf-8") as f:
+        f.write("sku,stock_actual,punto_reorden\nSKU-PROC-01,50,20\n")
+    with open(os.path.join(dir_limpio, "incidencias.json"), "w", encoding="utf-8") as f:
+        json.dump({"resumen": {"filas_rechazadas_indices": []}}, f)
+
+    resp_limpio = client.post(f"/api/v1/datos/cargas/{c_limpio.id_carga}/procesar-validos", headers=headers)
+    assert resp_limpio.status_code == 200
+    db_session.refresh(c_limpio)
+    assert c_limpio.estado == "COMPLETADO"
+    assert c_limpio.detalle_error is None
+
+    c_adv = CargaDatos(
+        tipo_carga="inventario",
+        fecha_ejecucion=datetime.utcnow(),
+        estado="PENDIENTE",
+        registros_procesados=2,
+        registros_rechazados=1,
+        porcentaje_calidad=50.0,
+        detalle_error="Validado con 1 observaciones (50.0% calidad). Pendiente de consolidación."
+    )
+    db_session.add(c_adv)
+    db_session.commit()
+
+    dir_adv = get_storage_carga_dir(c_adv.id_carga)
+    with open(os.path.join(dir_adv, "archivo_original.csv"), "w", encoding="utf-8") as f:
+        f.write("sku,stock_actual,punto_reorden\nSKU-PROC-01,60,25\nSKU-INVALIDO,-1,0\n")
+    with open(os.path.join(dir_adv, "incidencias.json"), "w", encoding="utf-8") as f:
+        json.dump({"resumen": {"filas_rechazadas_indices": [1]}}, f)
+
+    resp_adv = client.post(f"/api/v1/datos/cargas/{c_adv.id_carga}/procesar-validos", headers=headers)
+    assert resp_adv.status_code == 200
+    db_session.refresh(c_adv)
+    assert c_adv.estado == "CON_ADVERTENCIAS"
+    assert c_adv.detalle_error == f"Consolidado: 1 registros válidos incorporados; 1 registros con observaciones excluidos ({c_adv.porcentaje_calidad}% de calidad)."

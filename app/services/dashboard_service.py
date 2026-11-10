@@ -386,7 +386,7 @@ class DashboardService:
             es_estimacion=True,
             nota_metodologica="Métrica analítica modelada sobre el catálogo activo y el pronóstico a 14 días ante la ausencia de registros de saldos físicos diarios en la base transaccional de FasRetail.",
             linea_base_historica_disponible=False,
-            mensaje_linea_base="Línea base histórica no disponible: no existen saldos diarios históricos de inventario; el nivel proyectado se compara contra la meta referencial.",
+            mensaje_linea_base="No existen saldos diarios históricos de inventario; el nivel de servicio proyectado se compara contra la meta referencial.",
             almacenes=["Principal"],
             almacen_seleccionado=almacen or "Principal",
             categoria_filtrada=categoria,

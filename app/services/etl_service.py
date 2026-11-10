@@ -732,8 +732,13 @@ def procesar_registros_validos(
 
     if carga.registros_rechazados > 0:
         carga.estado = "CON_ADVERTENCIAS"
+        validos = (carga.registros_procesados or 0) - (carga.registros_rechazados or 0)
+        rechazados = carga.registros_rechazados
+        calidad = carga.porcentaje_calidad
+        carga.detalle_error = f"Consolidado: {validos} registros válidos incorporados; {rechazados} registros con observaciones excluidos ({calidad}% de calidad)."
     else:
         carga.estado = "COMPLETADO"
+        carga.detalle_error = None
     db.commit()
 
     etapas_path = os.path.join(carga_dir, "etapas.json")
