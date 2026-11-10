@@ -5,12 +5,15 @@ from app.schemas.common import RetailProBaseModel
 
 class EstadoItem(RetailProBaseModel):
     ultima_actualizacion: Optional[datetime.datetime] = None
+    desactualizado: bool = False
     total_registros: int
     estado: str
     detalle: Optional[str] = None
 
 
 class CategoriasItem(RetailProBaseModel):
+    ultima_actualizacion: Optional[datetime.datetime] = None
+    desactualizado: bool = False
     total_categorias: int
     categorias: List[Dict[str, Any]]
 
@@ -95,3 +98,7 @@ class CalidadGlobalResponse(RetailProBaseModel):
     desglose_errores_etiquetas: Optional[Dict[str, int]] = None
     incidencias_frecuentes: Optional[List[IncidenciaFrecuenteItem]] = None
     historico_cargas: List[Dict[str, Any]]
+    ultima_carga_pct: Optional[float] = None
+    ultima_carga_fecha: Optional[datetime.datetime] = None
+    ultima_carga_tipo: Optional[str] = None
+    ultima_carga_cumple: Optional[bool] = None

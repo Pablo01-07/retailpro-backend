@@ -3,7 +3,7 @@ import time
 import math
 import json
 from datetime import datetime, date, timedelta
-from typing import Dict, List, Any, Tuple, Optional
+from typing import Dict, List, Any, Tuple, Optional, Set
 import numpy as np
 import pandas as pd
 import xgboost as xgb
@@ -172,6 +172,44 @@ class MLForecastService:
 
     calcular_niveles_incertidumbre_por_sku = staticmethod(calcular_niveles_incertidumbre_por_sku)
 
+    @classmethod
+    def tiene_historial_suficiente(cls, db: Session, id_producto: int) -> bool:
+        max_f = db.query(func.max(VentaHistorica.fecha)).scalar()
+        min_f = db.query(func.min(VentaHistorica.fecha)).scalar()
+        if not max_f or not min_f:
+            return True
+        min_prod = db.query(func.min(VentaHistorica.fecha)).filter(VentaHistorica.id_producto == id_producto).scalar()
+        if not min_prod:
+            return False
+        dataset_span = (max_f - min_f).days
+        if dataset_span < settings.MIN_HISTORIAL_DIAS:
+            return True
+        return (max_f - min_prod).days >= settings.MIN_HISTORIAL_DIAS
+
+    @classmethod
+    def obtener_ids_productos_con_historial_insuficiente(cls, db: Session) -> Set[int]:
+        max_f = db.query(func.max(VentaHistorica.fecha)).scalar()
+        min_f = db.query(func.min(VentaHistorica.fecha)).scalar()
+        if not max_f or not min_f:
+            return set()
+
+        dataset_span = (max_f - min_f).days
+        ventas_prod = db.query(
+            VentaHistorica.id_producto,
+            func.min(VentaHistorica.fecha)
+        ).group_by(VentaHistorica.id_producto).all()
+        min_prod_map = {pid: m for pid, m in ventas_prod}
+
+        all_pids = set(p.id_producto for p in db.query(Producto.id_producto).all())
+        ids_insuf = set()
+        for pid in all_pids:
+            if pid not in min_prod_map:
+                ids_insuf.add(pid)
+            elif dataset_span >= settings.MIN_HISTORIAL_DIAS:
+                if (max_f - min_prod_map[pid]).days < settings.MIN_HISTORIAL_DIAS:
+                    ids_insuf.add(pid)
+        return ids_insuf
+
     FEATURE_COLS = [
         "lag_1", "lag_2", "lag_3", "lag_7", "lag_14", "lag_21", "lag_28",
         "rolling_mean_7", "rolling_mean_14", "rolling_mean_28",
@@ -182,9 +220,11 @@ class MLForecastService:
         "mes_sin", "mes_cos", "dia_semana_sin", "dia_semana_cos"
     ]
 
-    @staticmethod
-    def load_clean_sales_grid(db: Session) -> Tuple[pd.DataFrame, Dict[int, Dict[str, Any]], Dict[str, int], Dict[str, int]]:
+    @classmethod
+    def load_clean_sales_grid(cls, db: Session) -> Tuple[pd.DataFrame, Dict[int, Dict[str, Any]], Dict[str, int], Dict[str, int]]:
         productos = db.query(Producto).filter(Producto.estado != "descontinuado").order_by(Producto.sku.asc()).all()
+        ids_insuf = cls.obtener_ids_productos_con_historial_insuficiente(db)
+        productos = [p for p in productos if p.id_producto not in ids_insuf]
         if not productos:
             raise ValueError("No existen productos registrados en la base de datos.")
 
@@ -828,8 +868,11 @@ class MLForecastService:
         niveles_incertidumbre_sku = calcular_niveles_incertidumbre_por_sku(db=db, df_ventas=df_merged)
 
         resumen_cobertura = []
+        ids_insuf = cls.obtener_ids_productos_con_historial_insuficiente(db)
 
         for pid, pgroup in df_future.groupby("id_producto", sort=True):
+            if pid in ids_insuf:
+                continue
             pdata = prod_dict[pid]
             cat = pdata["categoria"]
             stock_actual = pdata["stock_actual"]
@@ -917,6 +960,10 @@ class MLForecastService:
                 db.query(Producto.id_producto).filter(Producto.estado == "descontinuado")
             )
         ).delete(synchronize_session=False)
+        if ids_insuf:
+            db.query(Pronostico).filter(
+                Pronostico.id_producto.in_(ids_insuf)
+            ).delete(synchronize_session=False)
         db.commit()
         t3_end = time.time()
         if id_carga:
@@ -976,6 +1023,8 @@ class MLForecastService:
             return 0
 
         productos = db.query(Producto).filter(Producto.estado != "descontinuado").order_by(Producto.sku.asc()).all()
+        ids_insuf = cls.obtener_ids_productos_con_historial_insuficiente(db)
+        productos = [p for p in productos if p.id_producto not in ids_insuf]
         if not productos:
             return 0
 
@@ -987,6 +1036,10 @@ class MLForecastService:
                 db.query(Producto.id_producto).filter(Producto.estado == "descontinuado")
             )
         ).delete(synchronize_session=False)
+        if ids_insuf:
+            db.query(Pronostico).filter(
+                Pronostico.id_producto.in_(ids_insuf)
+            ).delete(synchronize_session=False)
         db.commit()
 
         total_ventas = db.query(VentaHistorica).count()
@@ -1086,6 +1139,8 @@ class MLForecastService:
             niveles_incertidumbre_sku = calcular_niveles_incertidumbre_por_sku(db=db, df_ventas=df_grid)
 
             for pid, pgroup in df_future.groupby("id_producto", sort=True):
+                if pid in ids_insuf:
+                    continue
                 pdata = prod_dict.get(pid)
                 if not pdata:
                     continue

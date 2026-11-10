@@ -11,6 +11,7 @@ from app.models.producto import Producto
 from app.models.modelo_version import ModeloVersion
 from app.models.pronostico import Pronostico
 from app.models.venta_historica import VentaHistorica
+from app.services.ml_service import MLForecastService
 from app.schemas.forecast import (
     PronosticoListResponse,
     PronosticoSkuResumen,
@@ -38,6 +39,7 @@ def list_pronosticos_resumen(
     if categoria:
         q_prod = q_prod.filter(Producto.categoria == categoria)
     productos = q_prod.all()
+    ids_insuf = MLForecastService.obtener_ids_productos_con_historial_insuficiente(db)
 
     if not modelo_activo:
         if incluir_sin_pronostico:
@@ -55,7 +57,8 @@ def list_pronosticos_resumen(
                     fecha_generacion=None,
                     version_modelo="N/A",
                     estado=prod.estado,
-                    pronostico_disponible=False
+                    pronostico_disponible=False,
+                    historial_suficiente=(prod.id_producto not in ids_insuf)
                 )
                 for prod in productos
             ]
@@ -82,7 +85,8 @@ def list_pronosticos_resumen(
                     fecha_generacion=None,
                     version_modelo=modelo_activo.version,
                     estado=prod.estado,
-                    pronostico_disponible=False
+                    pronostico_disponible=False,
+                    historial_suficiente=(prod.id_producto not in ids_insuf)
                 )
                 for prod in productos
             ]
@@ -119,7 +123,8 @@ def list_pronosticos_resumen(
                 fecha_generacion=None,
                 version_modelo=modelo_activo.version,
                 estado=prod.estado,
-                pronostico_disponible=False
+                pronostico_disponible=False,
+                historial_suficiente=(prod.id_producto not in ids_insuf)
             ))
             continue
 
@@ -147,7 +152,8 @@ def list_pronosticos_resumen(
             fecha_generacion=fecha_gen,
             version_modelo=modelo_activo.version,
             estado=prod.estado,
-            pronostico_disponible=True
+            pronostico_disponible=True,
+            historial_suficiente=(prod.id_producto not in ids_insuf)
         ))
 
     return PronosticoListResponse(
@@ -263,6 +269,12 @@ def get_pronostico_detalle_sku(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="No se generan pronósticos para productos descontinuados"
+        )
+
+    if not MLForecastService.tiene_historial_suficiente(db, prod.id_producto):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Historial insuficiente para generar un pronóstico confiable"
         )
 
     modelo_activo = db.query(ModeloVersion).filter(ModeloVersion.estado == "ACTIVA").first()

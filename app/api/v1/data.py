@@ -2,10 +2,12 @@ import os
 import json
 import math
 from typing import Optional, List, Dict, Any, Tuple
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+
+from app.core.config import settings
 
 from app.core.database import get_db
 from app.core.dependencies import get_current_user, require_roles, RoleCode
@@ -53,37 +55,63 @@ def get_estado_datos(
     3. Catálogo de productos
     4. Categorías de productos
     """
+    def check_stale(dt: Optional[datetime], hours: int) -> bool:
+        if not dt:
+            return False
+        now = datetime.now(timezone.utc)
+        dt_comp = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+        return (now - dt_comp) > timedelta(hours=hours)
+
     ult_carga_ventas = db.query(CargaDatos).filter(
         CargaDatos.tipo_carga == "ventas",
-        CargaDatos.estado == "COMPLETADO"
+        CargaDatos.estado.in_(["COMPLETADO", "CON_ADVERTENCIAS"])
     ).order_by(CargaDatos.fecha_ejecucion.desc()).first()
     total_ventas = db.query(VentaHistorica).count()
+    f_ventas = ult_carga_ventas.fecha_ejecucion if ult_carga_ventas else None
+    desact_ventas = check_stale(f_ventas, settings.DATA_STALE_HOURS)
+    if ult_carga_ventas:
+        estado_ventas = "Desactualizado" if desact_ventas else "Actualizado"
+    else:
+        estado_ventas = "Actualizado" if total_ventas > 0 else "Sin datos"
+
     ventas_item = EstadoItem(
-        ultima_actualizacion=ult_carga_ventas.fecha_ejecucion if ult_carga_ventas else None,
+        ultima_actualizacion=f_ventas,
+        desactualizado=desact_ventas,
         total_registros=total_ventas,
-        estado="Actualizado" if total_ventas > 0 else "Sin datos",
+        estado=estado_ventas,
         detalle=f"{total_ventas} registros de ventas diarias consolidados"
     )
 
     ult_carga_inv = db.query(CargaDatos).filter(
         CargaDatos.tipo_carga == "inventario",
-        CargaDatos.estado == "COMPLETADO"
+        CargaDatos.estado.in_(["COMPLETADO", "CON_ADVERTENCIAS"])
     ).order_by(CargaDatos.fecha_ejecucion.desc()).first()
     skus_con_stock = db.query(Producto).filter(Producto.stock_actual > 0).count()
+    f_inv = ult_carga_inv.fecha_ejecucion if ult_carga_inv else None
+    desact_inv = check_stale(f_inv, settings.DATA_STALE_HOURS)
+    if ult_carga_inv:
+        estado_inv = "Desactualizado" if desact_inv else "Actualizado"
+    else:
+        estado_inv = "Actualizado" if skus_con_stock > 0 else "Pendiente"
+
     inv_item = EstadoItem(
-        ultima_actualizacion=ult_carga_inv.fecha_ejecucion if ult_carga_inv else None,
+        ultima_actualizacion=f_inv,
+        desactualizado=desact_inv,
         total_registros=skus_con_stock,
-        estado="Actualizado" if skus_con_stock > 0 else "Pendiente",
+        estado=estado_inv,
         detalle=f"{skus_con_stock} SKUs con balance de stock disponible"
     )
 
     ult_carga_prod = db.query(CargaDatos).filter(
         CargaDatos.tipo_carga == "productos",
-        CargaDatos.estado == "COMPLETADO"
+        CargaDatos.estado.in_(["COMPLETADO", "CON_ADVERTENCIAS"])
     ).order_by(CargaDatos.fecha_ejecucion.desc()).first()
-    total_productos = db.query(Producto).filter(Producto.estado == "activo").count()
+    total_productos = db.query(Producto).filter(Producto.estado != "descontinuado").count()
+    f_prod = ult_carga_prod.fecha_ejecucion if ult_carga_prod else None
+    desact_prod = check_stale(f_prod, settings.DATA_STALE_HOURS)
     cat_item = EstadoItem(
-        ultima_actualizacion=ult_carga_prod.fecha_ejecucion if ult_carga_prod else None,
+        ultima_actualizacion=f_prod,
+        desactualizado=desact_prod,
         total_registros=total_productos,
         estado="Activo" if total_productos > 0 else "Sin catálogo",
         detalle=f"{total_productos} productos activos en catálogo maestro"
@@ -96,6 +124,8 @@ def get_estado_datos(
 
     categorias_list = [{"categoria": r[0], "total_skus": r[1]} for r in categorias_query]
     categ_item = CategoriasItem(
+        ultima_actualizacion=f_prod,
+        desactualizado=desact_prod,
         total_categorias=len(categorias_list),
         categorias=categorias_list
     )
@@ -435,6 +465,26 @@ def get_calidad_global(
     total_cargas = len(cargas)
     umbral_min = get_calidad_min_threshold(db)
 
+    q_ult = db.query(CargaDatos).filter(
+        CargaDatos.estado.in_(["COMPLETADO", "CON_ADVERTENCIAS", "FALLIDO"])
+    )
+    if tipo_informacion:
+        q_ult = q_ult.filter(CargaDatos.tipo_carga == tipo_informacion.lower().strip())
+    else:
+        q_ult = q_ult.filter(CargaDatos.tipo_carga.in_(["ventas", "productos", "inventario"]))
+
+    ult_carga = q_ult.order_by(CargaDatos.fecha_ejecucion.desc(), CargaDatos.id_carga.desc()).first()
+    if ult_carga:
+        ult_carga_pct = round(float(ult_carga.porcentaje_calidad), 2)
+        ult_carga_fecha = ult_carga.fecha_ejecucion
+        ult_carga_tipo = ult_carga.tipo_carga
+        ult_carga_cumple = (ult_carga_pct >= umbral_min)
+    else:
+        ult_carga_pct = None
+        ult_carga_fecha = None
+        ult_carga_tipo = None
+        ult_carga_cumple = None
+
     if total_cargas == 0:
         return CalidadGlobalResponse(
             calidad_promedio_pct=100.0,
@@ -453,7 +503,11 @@ def get_calidad_global(
                 "Valores atípicos": 0
             },
             incidencias_frecuentes=[],
-            historico_cargas=[]
+            historico_cargas=[],
+            ultima_carga_pct=ult_carga_pct,
+            ultima_carga_fecha=ult_carga_fecha,
+            ultima_carga_tipo=ult_carga_tipo,
+            ultima_carga_cumple=ult_carga_cumple
         )
 
     total_proc = sum(c.registros_procesados for c in cargas)
@@ -526,5 +580,9 @@ def get_calidad_global(
         desglose_errores=desglose_total,
         desglose_errores_etiquetas=desglose_etiquetas,
         incidencias_frecuentes=incidencias_frecuentes,
-        historico_cargas=historico
+        historico_cargas=historico,
+        ultima_carga_pct=ult_carga_pct,
+        ultima_carga_fecha=ult_carga_fecha,
+        ultima_carga_tipo=ult_carga_tipo,
+        ultima_carga_cumple=ult_carga_cumple
     )

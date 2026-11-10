@@ -34,6 +34,7 @@ class PronosticoSkuResumen(RetailProBaseModel):
     version_modelo: str
     estado: Optional[str] = "activo"
     pronostico_disponible: bool = True
+    historial_suficiente: bool = True
 
 
 class PronosticoSkuDetalle(RetailProBaseModel):

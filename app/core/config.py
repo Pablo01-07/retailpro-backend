@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     POWERBI_EMBED_URL: str = ""
 
     EXPORT_MAX_FILAS: int = 10000
+    DATA_STALE_HOURS: int = 24
+    DASHBOARD_STALE_HOURS: int = 48
+    MIN_HISTORIAL_DIAS: int = 180
 
     DEFAULT_DATA_QUALITY_THRESHOLD: float = 98.0
     DEFAULT_STOCKOUT_MIN_PROBABILITY: float = 5.0

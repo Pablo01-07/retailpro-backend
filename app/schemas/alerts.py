@@ -21,6 +21,7 @@ class AlertaItem(RetailProBaseModel):
     dias_cobertura: float
     probabilidad_quiebre: float
     detalle_motivo: str
+    excedente_estimado: Optional[int] = None
 
 
 class ConteosAlertas(RetailProBaseModel):

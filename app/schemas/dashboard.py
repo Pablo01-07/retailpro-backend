@@ -1,4 +1,5 @@
 from typing import List, Optional, Dict, Any
+from datetime import datetime
 from app.schemas.common import RetailProBaseModel
 
 
@@ -40,6 +41,8 @@ class DashboardResumenResponse(RetailProBaseModel):
     top_riesgo_quiebre: List[Dict[str, Any]]
     tendencia_diaria_general: List[Dict[str, Any]]
     productos_mas_vendidos: List[ProductoMasVendidoItem] = []
+    ultima_actualizacion_datos: Optional[datetime] = None
+    datos_desactualizados: bool = False
 
 
 class NivelServicioCategoriaItem(RetailProBaseModel):

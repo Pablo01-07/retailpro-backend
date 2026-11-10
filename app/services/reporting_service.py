@@ -5,6 +5,7 @@ import math
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 from typing import List, Dict, Any, Optional
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
 import openpyxl
@@ -213,7 +214,25 @@ class ReportingService:
             formato = "xlsx"
             cls._export_xlsx(filepath, items)
         elif formato == "pdf":
-            cls._export_pdf(filepath, items)
+            try:
+                cls._export_pdf(filepath, items)
+            except HTTPException:
+                if os.path.exists(filepath):
+                    try:
+                        os.remove(filepath)
+                    except Exception:
+                        pass
+                raise
+            except Exception as exc:
+                if os.path.exists(filepath):
+                    try:
+                        os.remove(filepath)
+                    except Exception:
+                        pass
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="No se pudo generar el documento PDF. Intente nuevamente."
+                ) from exc
         else:
             raise ValueError(f"Formato no soportado: '{formato}'. Use 'csv', 'xlsx' o 'pdf'.")
 
@@ -339,14 +358,32 @@ class ReportingService:
             cls._auto_adjust_columns(ws)
             wb.save(filepath)
         elif formato == "pdf":
-            cls._export_pdf_generic(
-                filepath=filepath,
-                titulo="FasRetail - Reporte de Inventario y Cobertura",
-                subtitulo=f"Generado: {datetime.now(ZoneInfo('America/Lima')).strftime('%d/%m/%Y %H:%M')} | Total SKUs: {len(data_rows)}",
-                headers=["SKU", "Producto", "Cat.", "Stock", "Cob.(d)", "P.Reorden", "Alerta"],
-                col_widths=[60, 160, 50, 50, 55, 60, 65],
-                rows=[[r["sku"], r["producto"][:22], r["categoria"][:6], str(r["stock_actual"]), str(r["cobertura_dias"]), str(r["punto_reorden"]), r["estado_alerta"]] for r in data_rows[:60]]
-            )
+            try:
+                cls._export_pdf_generic(
+                    filepath=filepath,
+                    titulo="FasRetail - Reporte de Inventario y Cobertura",
+                    subtitulo=f"Generado: {datetime.now(ZoneInfo('America/Lima')).strftime('%d/%m/%Y %H:%M')} | Total SKUs: {len(data_rows)}",
+                    headers=["SKU", "Producto", "Cat.", "Stock", "Cob.(d)", "P.Reorden", "Alerta"],
+                    col_widths=[60, 160, 50, 50, 55, 60, 65],
+                    rows=[[r["sku"], r["producto"][:22], r["categoria"][:6], str(r["stock_actual"]), str(r["cobertura_dias"]), str(r["punto_reorden"]), r["estado_alerta"]] for r in data_rows[:60]]
+                )
+            except HTTPException:
+                if os.path.exists(filepath):
+                    try:
+                        os.remove(filepath)
+                    except Exception:
+                        pass
+                raise
+            except Exception as exc:
+                if os.path.exists(filepath):
+                    try:
+                        os.remove(filepath)
+                    except Exception:
+                        pass
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="No se pudo generar el documento PDF. Intente nuevamente."
+                ) from exc
         else:
             raise ValueError(f"Formato no soportado: '{formato}'. Use 'csv', 'xlsx' o 'pdf'.")
 
@@ -442,31 +479,49 @@ class ReportingService:
             cls._auto_adjust_columns(ws)
             wb.save(filepath)
         elif formato == "pdf":
-            resumen_sku: Dict[str, Dict[str, Any]] = {}
-            for r in records:
-                sku_val = r[1]
-                if sku_val not in resumen_sku:
-                    resumen_sku[sku_val] = {
-                        "sku": sku_val, "nombre": r[2], "cat": r[3], "cant": 0, "total": 0.0
-                    }
-                resumen_sku[sku_val]["cant"] += r[4]
-                resumen_sku[sku_val]["total"] += float(r[4]) * float(r[5])
+            try:
+                resumen_sku: Dict[str, Dict[str, Any]] = {}
+                for r in records:
+                    sku_val = r[1]
+                    if sku_val not in resumen_sku:
+                        resumen_sku[sku_val] = {
+                            "sku": sku_val, "nombre": r[2], "cat": r[3], "cant": 0, "total": 0.0
+                        }
+                    resumen_sku[sku_val]["cant"] += r[4]
+                    resumen_sku[sku_val]["total"] += float(r[4]) * float(r[5])
 
-            filas_pdf = []
-            for s_k, item in list(resumen_sku.items())[:60]:
-                filas_pdf.append([
-                    item["sku"], item["nombre"][:24], item["cat"][:6],
-                    str(item["cant"]), f"S/. {item['total']:,.2f}"
-                ])
+                filas_pdf = []
+                for s_k, item in list(resumen_sku.items())[:60]:
+                    filas_pdf.append([
+                        item["sku"], item["nombre"][:24], item["cat"][:6],
+                        str(item["cant"]), f"S/. {item['total']:,.2f}"
+                    ])
 
-            cls._export_pdf_generic(
-                filepath=filepath,
-                titulo="FasRetail - Reporte Ejecutivo de Ventas",
-                subtitulo=f"Generado: {datetime.now(ZoneInfo('America/Lima')).strftime('%d/%m/%Y %H:%M')} | Total Transacciones: {len(records)}",
-                headers=["SKU", "Producto", "Cat.", "Unidades Vendidas", "Ingreso Acumulado"],
-                col_widths=[65, 180, 60, 95, 100],
-                rows=filas_pdf
-            )
+                cls._export_pdf_generic(
+                    filepath=filepath,
+                    titulo="FasRetail - Reporte Ejecutivo de Ventas",
+                    subtitulo=f"Generado: {datetime.now(ZoneInfo('America/Lima')).strftime('%d/%m/%Y %H:%M')} | Total Transacciones: {len(records)}",
+                    headers=["SKU", "Producto", "Cat.", "Unidades Vendidas", "Ingreso Acumulado"],
+                    col_widths=[65, 180, 60, 95, 100],
+                    rows=filas_pdf
+                )
+            except HTTPException:
+                if os.path.exists(filepath):
+                    try:
+                        os.remove(filepath)
+                    except Exception:
+                        pass
+                raise
+            except Exception as exc:
+                if os.path.exists(filepath):
+                    try:
+                        os.remove(filepath)
+                    except Exception:
+                        pass
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="No se pudo generar el documento PDF. Intente nuevamente."
+                ) from exc
         else:
             raise ValueError(f"Formato no soportado: '{formato}'. Use 'csv', 'xlsx' o 'pdf'.")
 
@@ -640,14 +695,32 @@ class ReportingService:
             cls._auto_adjust_columns(ws)
             wb.save(filepath)
         elif formato == "pdf":
-            cls._export_pdf_generic(
-                filepath=filepath,
-                titulo="FasRetail - Reporte de Indicadores de Rendimiento",
-                subtitulo=f"Generado: {datetime.now(ZoneInfo('America/Lima')).strftime('%d/%m/%Y %H:%M')} | Versión Modelo: {modelo_activo.version if modelo_activo else 'N/A'} | Veredicto MAPE: {veredicto_mape}",
-                headers=["Indicador", "Valor", "Meta", "Estado", "Descripción"],
-                col_widths=[140, 60, 65, 65, 170],
-                rows=[[ind[0], ind[1], ind[2], ind[3], ind[4]] for ind in indicadores_summary]
-            )
+            try:
+                cls._export_pdf_generic(
+                    filepath=filepath,
+                    titulo="FasRetail - Reporte de Indicadores de Rendimiento",
+                    subtitulo=f"Generado: {datetime.now(ZoneInfo('America/Lima')).strftime('%d/%m/%Y %H:%M')} | Versión Modelo: {modelo_activo.version if modelo_activo else 'N/A'} | Veredicto MAPE: {veredicto_mape}",
+                    headers=["Indicador", "Valor", "Meta", "Estado", "Descripción"],
+                    col_widths=[140, 60, 65, 65, 170],
+                    rows=[[ind[0], ind[1], ind[2], ind[3], ind[4]] for ind in indicadores_summary]
+                )
+            except HTTPException:
+                if os.path.exists(filepath):
+                    try:
+                        os.remove(filepath)
+                    except Exception:
+                        pass
+                raise
+            except Exception as exc:
+                if os.path.exists(filepath):
+                    try:
+                        os.remove(filepath)
+                    except Exception:
+                        pass
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="No se pudo generar el documento PDF. Intente nuevamente."
+                ) from exc
         else:
             raise ValueError(f"Formato no soportado: '{formato}'. Use 'csv', 'xlsx' o 'pdf'.")
 
@@ -792,7 +865,18 @@ class ReportingService:
         ]))
 
         elements.append(t)
-        doc.build(elements)
+        try:
+            doc.build(elements)
+        except Exception as exc:
+            if os.path.exists(filepath):
+                try:
+                    os.remove(filepath)
+                except Exception:
+                    pass
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No se pudo generar el documento PDF. Intente nuevamente."
+            ) from exc
 
     @staticmethod
     def _export_pdf_generic(
@@ -846,4 +930,15 @@ class ReportingService:
         ]))
 
         elements.append(t)
-        doc.build(elements)
+        try:
+            doc.build(elements)
+        except Exception as exc:
+            if os.path.exists(filepath):
+                try:
+                    os.remove(filepath)
+                except Exception:
+                    pass
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No se pudo generar el documento PDF. Intente nuevamente."
+            ) from exc

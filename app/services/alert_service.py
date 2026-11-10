@@ -449,10 +449,18 @@ class AlertService:
                     motivo = f"Riesgo crítico de quiebre (prioridad ALTA): {dias_cob:.1f} días de cobertura (umbral: {u_cob_quiebre:.1f}d), P(quiebre): {prob_quiebre:.1f}%."
                 else:
                     motivo = f"Advertencia preventiva de quiebre (prioridad MEDIA): {dias_cob:.1f} días de cobertura (umbral: {u_cob_quiebre:.1f}d)."
+                excedente_estimado = None
             else:
                 severidad = "ADVERTENCIA"
                 prio = "MEDIA"
-                motivo = f"Exceso de inventario inmovilizado (prioridad MEDIA): {dias_cob:.1f} días de cobertura (umbral: {u_dias_sobre:.1f}d)."
+                dem_14d = 0.0
+                if pron and pron.explicacion_shap and isinstance(pron.explicacion_shap, dict):
+                    dem_14d = float(pron.explicacion_shap.get("demanda_acumulada_14d", 0.0))
+                elif pron:
+                    dem_14d = float(pron.cantidad_proyectada) * 14.0
+                dem_diaria_proy = dem_14d / 14.0
+                excedente_estimado = max(0, int(round(prod.stock_actual - (dem_diaria_proy * u_dias_sobre))))
+                motivo = f"Exceso de inventario inmovilizado (prioridad MEDIA): {dias_cob:.1f} días de cobertura (umbral: {u_dias_sobre:.1f}d). Excedente estimado: {excedente_estimado} u."
 
             if prioridad and prio != prioridad.upper():
                 continue
@@ -477,7 +485,8 @@ class AlertService:
                 punto_reorden=prod.punto_reorden,
                 dias_cobertura=dias_cob,
                 probabilidad_quiebre=prob_quiebre,
-                detalle_motivo=motivo
+                detalle_motivo=motivo,
+                excedente_estimado=excedente_estimado
             ))
 
         from app.schemas.alerts import ConteosAlertas

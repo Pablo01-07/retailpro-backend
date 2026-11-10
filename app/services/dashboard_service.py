@@ -1,8 +1,10 @@
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from typing import Dict, List, Any, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
 
+from app.core.config import settings
+from app.models.carga_datos import CargaDatos
 from app.models.producto import Producto
 from app.models.pronostico import Pronostico
 from app.models.modelo_version import ModeloVersion
@@ -236,12 +238,38 @@ class DashboardService:
 
         productos_mas_vendidos = cls.get_productos_mas_vendidos(db)
 
+        ult_v = db.query(CargaDatos).filter(
+            CargaDatos.tipo_carga == "ventas",
+            CargaDatos.estado.in_(["COMPLETADO", "CON_ADVERTENCIAS"])
+        ).order_by(CargaDatos.fecha_ejecucion.desc()).first()
+
+        ult_i = db.query(CargaDatos).filter(
+            CargaDatos.tipo_carga == "inventario",
+            CargaDatos.estado.in_(["COMPLETADO", "CON_ADVERTENCIAS"])
+        ).order_by(CargaDatos.fecha_ejecucion.desc()).first()
+
+        fechas_cargas = [c.fecha_ejecucion for c in [ult_v, ult_i] if c and c.fecha_ejecucion]
+        if len(fechas_cargas) == 2:
+            ultima_actualizacion_datos = min(fechas_cargas)
+        elif len(fechas_cargas) == 1:
+            ultima_actualizacion_datos = fechas_cargas[0]
+        else:
+            ultima_actualizacion_datos = None
+
+        datos_desactualizados = False
+        if ultima_actualizacion_datos:
+            now = datetime.now(timezone.utc)
+            dt_comp = ultima_actualizacion_datos.replace(tzinfo=timezone.utc) if ultima_actualizacion_datos.tzinfo is None else ultima_actualizacion_datos
+            datos_desactualizados = (now - dt_comp) > timedelta(hours=settings.DASHBOARD_STALE_HOURS)
+
         return DashboardResumenResponse(
             kpis=kpis,
             categorias=categorias_resumen,
             top_riesgo_quiebre=candidatos_quiebre,
             tendencia_diaria_general=tendencia,
-            productos_mas_vendidos=productos_mas_vendidos
+            productos_mas_vendidos=productos_mas_vendidos,
+            ultima_actualizacion_datos=ultima_actualizacion_datos,
+            datos_desactualizados=datos_desactualizados
         )
 
     @classmethod
