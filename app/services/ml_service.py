@@ -595,6 +595,7 @@ class MLForecastService:
                 mape=metrics_xgb["mape"],
                 rmse=metrics_xgb["rmse"],
                 mape_14d=corte_mape_14d,
+                wape=metrics_xgb.get("wape"),
                 estado="DESCARTADA"
             )
             db.add(mv)
@@ -869,6 +870,9 @@ class MLForecastService:
         count_prod = db.query(ModeloVersion).filter(ModeloVersion.motivo_entrenamiento != "backtest").count()
         nueva_version = f"v{count_prod + 1}.0.0"
 
+        u_mape_prod = db.query(UmbralConfiguracion).filter(UmbralConfiguracion.tipo_umbral == "mape_max").first()
+        u_mape_prod_val = float(u_mape_prod.valor) if u_mape_prod else 15.0
+
         mv_prod = ModeloVersion(
             version=nueva_version,
             fecha_entrenamiento=datetime.utcnow(),
@@ -877,6 +881,8 @@ class MLForecastService:
             mape=out_of_sample_metrics.get("mape"),
             rmse=out_of_sample_metrics.get("rmse"),
             mape_14d=out_of_sample_metrics.get("mape_14d"),
+            wape=out_of_sample_metrics.get("wape"),
+            umbral_mape_evaluacion=u_mape_prod_val,
             estado="ACTIVA"
         )
         db.add(mv_prod)
@@ -1169,6 +1175,9 @@ class MLForecastService:
                 candidate_minor += 1
                 nueva_version = f"v{major_base}.{candidate_minor}.0"
 
+            u_mape = db.query(UmbralConfiguracion).filter(UmbralConfiguracion.tipo_umbral == "mape_max").first()
+            umbral_mape = float(u_mape.valor) if u_mape else 15.0
+
             mv_cand = ModeloVersion(
                 version=nueva_version,
                 fecha_entrenamiento=get_utc_now(),
@@ -1177,6 +1186,8 @@ class MLForecastService:
                 mape=avg_mape,
                 rmse=avg_rmse,
                 mape_14d=avg_mape_14d,
+                wape=avg_wape,
+                umbral_mape_evaluacion=umbral_mape,
                 estado="CANDIDATA"
             )
             db.add(mv_cand)
@@ -1197,6 +1208,7 @@ class MLForecastService:
                 "rmse": avg_rmse,
                 "wape": avg_wape,
                 "mape_14d": avg_mape_14d,
+                "umbral_mape_evaluacion": umbral_mape,
                 "cobertura_intervalo_95": cob_empirica,
                 "cobertura_secuencial_fuera_muestra": cob_empirica,
                 "fecha_max_ventas": max_date.isoformat(),
@@ -1210,13 +1222,13 @@ class MLForecastService:
                 json.dump(eval_artifact, f, indent=4, ensure_ascii=False)
 
             t3 = time.time()
-            u_mape = db.query(UmbralConfiguracion).filter(UmbralConfiguracion.tipo_umbral == "mape_max").first()
-            umbral_mape = float(u_mape.valor) if u_mape else 15.0
-
             x_num = int(avg_mape_14d) if float(avg_mape_14d).is_integer() else avg_mape_14d
             u_num = int(umbral_mape) if float(umbral_mape).is_integer() else umbral_mape
 
             version_vigente = modelo_activo.version if modelo_activo else "vigente"
+
+            mv_cand.wape = avg_wape
+            mv_cand.umbral_mape_evaluacion = umbral_mape
 
             if avg_mape_14d > umbral_mape:
                 mv_cand.estado = "DESCARTADA"
@@ -1259,6 +1271,7 @@ class MLForecastService:
                 "rmse": avg_rmse,
                 "wape": avg_wape,
                 "mape_14d": avg_mape_14d,
+                "umbral_mape_evaluacion": umbral_mape,
                 "cobertura_intervalo_95": cob_empirica,
                 "fecha_max_ventas": max_date.isoformat(),
                 "duracion_segundos": total_s,

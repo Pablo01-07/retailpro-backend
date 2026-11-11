@@ -2,6 +2,7 @@ import os
 import json
 import pytest
 from datetime import datetime, timedelta, timezone, date
+from zoneinfo import ZoneInfo
 from decimal import Decimal
 from unittest.mock import patch, MagicMock
 import pandas as pd
@@ -487,3 +488,219 @@ def test_ficha_tecnica_y_monitoreo_cobertura_identica(client, analyst_token, adm
     cob_mon = r_mon.json()["cobertura_intervalo_95"]
 
     assert cob_ficha == cob_mon
+
+
+def test_notificaciones_usa_umbral_de_evaluacion_de_la_version(client, analyst_token, admin_token, db_session):
+    headers_an = {"Authorization": f"Bearer {analyst_token}"}
+    headers_ad = {"Authorization": f"Bearer {admin_token}"}
+
+    u_mape = db_session.query(UmbralConfiguracion).filter(UmbralConfiguracion.tipo_umbral == "mape_max").first()
+    if u_mape:
+        u_mape.valor = 15.0
+    else:
+        db_session.add(UmbralConfiguracion(tipo_umbral="mape_max", valor=15.0))
+    db_session.commit()
+
+    cand1 = ModeloVersion(
+        version="v1.7.0",
+        fecha_entrenamiento=datetime.now(timezone.utc).replace(tzinfo=None),
+        motivo_entrenamiento="reentrenamiento_manual",
+        estado="DESCARTADA",
+        mape_14d=10.73,
+        umbral_mape_evaluacion=10.0,
+        observacion="MAPE (demanda 14 días) 10.73% supera el umbral de 10%. Se mantiene la versión v1.0.0 en producción."
+    )
+    cand2 = ModeloVersion(
+        version="v1.8.0",
+        fecha_entrenamiento=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1),
+        motivo_entrenamiento="reentrenamiento_manual",
+        estado="DESCARTADA",
+        mape_14d=12.5,
+        umbral_mape_evaluacion=None,
+        observacion="MAPE (demanda 14 días) 12.5% supera el umbral de 12%. Se mantiene la versión v1.0.0 en producción."
+    )
+    db_session.add_all([cand1, cand2])
+    db_session.commit()
+
+    resp_cargas = client.get("/api/v1/notificaciones/cargas?limite=10", headers=headers_an)
+    assert resp_cargas.status_code == 200
+    msgs_cargas = {it["id_carga"]: it for it in resp_cargas.json()}
+    assert cand1.id_modelo in msgs_cargas
+    assert "supera el umbral de 10%." in msgs_cargas[cand1.id_modelo]["mensaje"]
+    assert msgs_cargas[cand1.id_modelo]["umbral_calidad"] == 10.0
+    assert cand2.id_modelo in msgs_cargas
+    assert "supera el umbral de 12%." in msgs_cargas[cand2.id_modelo]["mensaje"]
+    assert msgs_cargas[cand2.id_modelo]["umbral_calidad"] == 12.0
+
+    resp_modelos = client.get("/api/v1/notificaciones/modelos?limite=10", headers=headers_an)
+    assert resp_modelos.status_code == 200
+    msgs_modelos = {it["id_carga"]: it for it in resp_modelos.json()}
+    assert "supera el umbral de 10%." in msgs_modelos[cand1.id_modelo]["mensaje"]
+
+    resp_comp = client.get(f"/api/v1/modelos/{cand1.id_modelo}/comparacion", headers=headers_ad)
+    assert resp_comp.status_code == 200
+    assert resp_comp.json()["umbral_mape_evaluacion"] == 10.0
+
+
+def test_fecha_publicacion_hora_america_lima(client, admin_token, db_session):
+    headers_ad = {"Authorization": f"Bearer {admin_token}"}
+
+    cand = ModeloVersion(
+        version="v1.9.0",
+        fecha_entrenamiento=datetime.now(timezone.utc).replace(tzinfo=None),
+        motivo_entrenamiento="reentrenamiento_manual",
+        estado="APTA",
+        mae=2.5,
+        mape=12.0,
+        mape_14d=11.2,
+        wape=19.90,
+        umbral_mape_evaluacion=15.0,
+        observacion="Cumple el umbral (11.2% ≤ 15%). Pendiente de aprobación para publicación."
+    )
+    db_session.add(cand)
+    db_session.commit()
+
+    resp = client.post(f"/api/v1/modelos/{cand.id_modelo}/publicar", headers=headers_ad)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["estado"] == "ACTIVA"
+
+    expected_prefix = datetime.now(ZoneInfo("America/Lima")).strftime("Publicada el %d/%m/%Y %H")
+    assert data["observacion"].startswith(expected_prefix)
+
+
+def test_wape_por_version_historial_comparacion_ficha_y_monitoreo(client, admin_token, analyst_token, db_session):
+    headers_ad = {"Authorization": f"Bearer {admin_token}"}
+    headers_an = {"Authorization": f"Bearer {analyst_token}"}
+
+    activa_prev = db_session.query(ModeloVersion).filter(ModeloVersion.estado == "ACTIVA").first()
+    if activa_prev:
+        activa_prev.wape = 20.01
+    else:
+        activa_prev = ModeloVersion(
+            version="v1.0.0",
+            fecha_entrenamiento=datetime.now(timezone.utc).replace(tzinfo=None),
+            motivo_entrenamiento="inicial",
+            estado="ACTIVA",
+            mae=3.0,
+            mape=14.0,
+            mape_14d=12.0,
+            wape=20.01
+        )
+        db_session.add(activa_prev)
+    db_session.commit()
+
+    cand = ModeloVersion(
+        version="v1.10.0",
+        fecha_entrenamiento=datetime.now(timezone.utc).replace(tzinfo=None),
+        motivo_entrenamiento="reentrenamiento_manual",
+        estado="APTA",
+        mae=2.4,
+        mape=11.5,
+        mape_14d=10.2,
+        wape=19.90,
+        umbral_mape_evaluacion=15.0,
+        observacion="Cumple el umbral (10.2% ≤ 15%). Pendiente de aprobación para publicación."
+    )
+    db_session.add(cand)
+    db_session.commit()
+
+    r_hist = client.get("/api/v1/modelos/historial", headers=headers_an)
+    assert r_hist.status_code == 200
+    hist_dict = {item["id_modelo"]: item for item in r_hist.json()}
+    assert hist_dict[cand.id_modelo]["wape"] == 19.90
+    assert hist_dict[activa_prev.id_modelo]["wape"] == 20.01
+
+    r_comp = client.get(f"/api/v1/modelos/{cand.id_modelo}/comparacion", headers=headers_ad)
+    assert r_comp.status_code == 200
+    comp_data = r_comp.json()
+    assert comp_data["candidato"]["wape"] == 19.90
+    assert comp_data["activa"]["wape"] == 20.01
+
+    r_pub = client.post(f"/api/v1/modelos/{cand.id_modelo}/publicar", headers=headers_ad)
+    assert r_pub.status_code == 200
+
+    met_path = os.path.join(settings.STORAGE_DIR, "modelos", "metricas_modelo.json")
+    with open(met_path, "r", encoding="utf-8") as f:
+        met_data = json.load(f)
+    assert met_data["wape"] == 19.90
+
+    r_ficha = client.get("/api/v1/modelos/activa", headers=headers_an)
+    assert r_ficha.status_code == 200
+    ficha_data = r_ficha.json()
+    assert ficha_data["wape"] == 19.90
+    assert "proximo_reentrenamiento_programado" in ficha_data
+
+    r_ficha_alias = client.get("/api/v1/modelos/ficha", headers=headers_an)
+    assert r_ficha_alias.status_code == 200
+    assert r_ficha_alias.json()["wape"] == 19.90
+
+    r_mon = client.get("/api/v1/modelos/monitoreo", headers=headers_an)
+    assert r_mon.status_code == 200
+    assert r_mon.json()["wape"] == 19.90
+
+
+def test_comparacion_vigente_equivalente_mejora_empeora(client, admin_token, db_session):
+    headers_ad = {"Authorization": f"Bearer {admin_token}"}
+
+    activa = db_session.query(ModeloVersion).filter(ModeloVersion.estado == "ACTIVA").first()
+    if activa:
+        activa.mape_14d = 11.00
+    else:
+        activa = ModeloVersion(
+            version="v1.0.0",
+            fecha_entrenamiento=datetime.now(timezone.utc).replace(tzinfo=None),
+            motivo_entrenamiento="inicial",
+            estado="ACTIVA",
+            mape_14d=11.00
+        )
+        db_session.add(activa)
+    db_session.commit()
+
+    cand_equiv = ModeloVersion(
+        version="v1.11.0",
+        fecha_entrenamiento=datetime.now(timezone.utc).replace(tzinfo=None),
+        motivo_entrenamiento="reentrenamiento_manual",
+        estado="APTA",
+        mape_14d=11.03,
+        umbral_mape_evaluacion=15.0,
+        observacion="Cumple el umbral"
+    )
+    cand_mejora = ModeloVersion(
+        version="v1.12.0",
+        fecha_entrenamiento=datetime.now(timezone.utc).replace(tzinfo=None),
+        motivo_entrenamiento="reentrenamiento_manual",
+        estado="APTA",
+        mape_14d=10.40,
+        umbral_mape_evaluacion=15.0,
+        observacion="Cumple el umbral"
+    )
+    cand_empeora = ModeloVersion(
+        version="v1.13.0",
+        fecha_entrenamiento=datetime.now(timezone.utc).replace(tzinfo=None),
+        motivo_entrenamiento="reentrenamiento_manual",
+        estado="APTA",
+        mape_14d=11.60,
+        umbral_mape_evaluacion=15.0,
+        observacion="Cumple el umbral"
+    )
+    db_session.add_all([cand_equiv, cand_mejora, cand_empeora])
+    db_session.commit()
+
+    r1 = client.get(f"/api/v1/modelos/{cand_equiv.id_modelo}/comparacion", headers=headers_ad)
+    assert r1.status_code == 200
+    d1 = r1.json()
+    assert d1["comparacion_vigente"] == "equivalente"
+    assert d1["mejora_vigente"] is False
+
+    r2 = client.get(f"/api/v1/modelos/{cand_mejora.id_modelo}/comparacion", headers=headers_ad)
+    assert r2.status_code == 200
+    d2 = r2.json()
+    assert d2["comparacion_vigente"] == "mejora"
+    assert d2["mejora_vigente"] is True
+
+    r3 = client.get(f"/api/v1/modelos/{cand_empeora.id_modelo}/comparacion", headers=headers_ad)
+    assert r3.status_code == 200
+    d3 = r3.json()
+    assert d3["comparacion_vigente"] == "empeora"
+    assert d3["mejora_vigente"] is False

@@ -1,6 +1,8 @@
 import os
 import json
 import shutil
+import re
+from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException, Query, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -68,6 +70,7 @@ router = APIRouter(prefix="/modelos", tags=["Modelos de Machine Learning"])
 
 
 @router.get("/activa", response_model=FichaModeloResponse)
+@router.get("/ficha", response_model=FichaModeloResponse, include_in_schema=True)
 def get_ficha_modelo_activo(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(require_roles([RoleCode.ADMIN, RoleCode.ANALYST, RoleCode.LOGISTICS]))
@@ -133,7 +136,19 @@ def get_ficha_modelo_activo(
             FeatureImportanceItem(feature="es_quincena", importancia=0.0380, descripcion="Efecto quincena / fin de mes")
         ]
 
-    wape_val = ReportingService.calcular_wape_fuera_muestra(db)
+    wape_val = float(modelo.wape) if modelo.wape is not None else None
+    if wape_val is None:
+        met_path = os.path.join(settings.STORAGE_DIR, "modelos", "metricas_modelo.json")
+        if os.path.exists(met_path):
+            try:
+                with open(met_path, "r", encoding="utf-8") as f:
+                    mdata = json.load(f)
+                    if "wape" in mdata and mdata["wape"] is not None:
+                        wape_val = float(mdata["wape"])
+            except Exception:
+                pass
+    if wape_val is None:
+        wape_val = ReportingService.calcular_wape_fuera_muestra(db)
 
     cobertura_ic = 94.72
     calib_path = os.path.join(settings.STORAGE_DIR, "modelos", "calibracion_activa.json")
@@ -147,6 +162,9 @@ def get_ficha_modelo_activo(
                     cobertura_ic = float(cdata["cobertura_secuencial_fuera_muestra"])
         except Exception:
             pass
+
+    ensure_scheduler_started()
+    proximo_reent = get_job_proxima_ejecucion("reentrenamiento_semanal")
 
     return FichaModeloResponse(
         id_modelo=modelo.id_modelo,
@@ -165,7 +183,8 @@ def get_ficha_modelo_activo(
         cumple_meta=cumple,
         parametros=parametros,
         importancia_variables=importancia_features,
-        observacion=modelo.observacion
+        observacion=modelo.observacion,
+        proximo_reentrenamiento_programado=proximo_reent
     )
 
 
@@ -243,6 +262,20 @@ def get_monitoreo_modelo(
 
     modelo_mape_14d = float(modelo_activo.mape_14d) if (modelo_activo and modelo_activo.mape_14d is not None) else None
 
+    wape_val = float(modelo_activo.wape) if (modelo_activo and modelo_activo.wape is not None) else None
+    if wape_val is None:
+        met_path = os.path.join(settings.STORAGE_DIR, "modelos", "metricas_modelo.json")
+        if os.path.exists(met_path):
+            try:
+                with open(met_path, "r", encoding="utf-8") as f:
+                    mdata = json.load(f)
+                    if "wape" in mdata and mdata["wape"] is not None:
+                        wape_val = float(mdata["wape"])
+            except Exception:
+                pass
+    if wape_val is None:
+        wape_val = ReportingService.calcular_wape_fuera_muestra(db)
+
     ensure_scheduler_started()
     proximo_reent = get_job_proxima_ejecucion("reentrenamiento_semanal")
 
@@ -254,6 +287,7 @@ def get_monitoreo_modelo(
         umbral_mape_max=umbral_mape,
         alerta_degradacion=alerta_degradacion,
         total_cortes_evaluados=len(serie_mensual),
+        wape=wape_val,
         cobertura_intervalo_95=cobertura_real,
         cobertura_fuera_muestra=cobertura_real,
         serie_mensual=serie_mensual,
@@ -274,10 +308,33 @@ def list_historial_modelos(
         ModeloVersion.motivo_entrenamiento != "backtest"
     ).order_by(ModeloVersion.fecha_entrenamiento.desc()).all()
 
-    wape_global = ReportingService.calcular_wape_fuera_muestra(db)
+    resultado = []
+    for m in modelos:
+        w_val = float(m.wape) if m.wape is not None else None
+        if w_val is None:
+            cand_path = os.path.join(settings.STORAGE_DIR, "modelos", f"evaluacion_modelo_{m.id_modelo}.json")
+            if os.path.exists(cand_path):
+                try:
+                    with open(cand_path, "r", encoding="utf-8") as f:
+                        ed = json.load(f)
+                        if "wape" in ed and ed["wape"] is not None:
+                            w_val = float(ed["wape"])
+                except Exception:
+                    pass
+        if w_val is None and m.estado == "ACTIVA":
+            met_path = os.path.join(settings.STORAGE_DIR, "modelos", "metricas_modelo.json")
+            if os.path.exists(met_path):
+                try:
+                    with open(met_path, "r", encoding="utf-8") as f:
+                        mdata = json.load(f)
+                        if "wape" in mdata and mdata["wape"] is not None:
+                            w_val = float(mdata["wape"])
+                except Exception:
+                    pass
+            if w_val is None:
+                w_val = ReportingService.calcular_wape_fuera_muestra(db)
 
-    return [
-        ModeloHistorialItem(
+        resultado.append(ModeloHistorialItem(
             id_modelo=m.id_modelo,
             version=m.version,
             fecha_entrenamiento=m.fecha_entrenamiento,
@@ -285,13 +342,12 @@ def list_historial_modelos(
             mae=float(m.mae) if m.mae else None,
             mape=float(m.mape) if m.mape else None,
             rmse=float(m.rmse) if m.rmse else None,
-            wape=wape_global if m.estado == "ACTIVA" else None,
+            wape=w_val,
             mape_14d=float(m.mape_14d) if m.mape_14d is not None else None,
             estado=m.estado,
             observacion=m.observacion
-        )
-        for m in modelos
-    ]
+        ))
+    return resultado
 
 
 @router.post("/activa/reevaluar", response_model=ReevaluarModeloResponse)
@@ -336,6 +392,7 @@ def reevaluar_modelo_activo(
     modelo_activo.rmse = avg_rmse
     modelo_activo.mae = avg_mae
     modelo_activo.mape_14d = avg_mape_14d
+    modelo_activo.wape = avg_wape
     db.commit()
     db.refresh(modelo_activo)
 
@@ -531,7 +588,7 @@ def get_comparacion_modelo(
     cand_mape = float(candidato.mape) if candidato.mape is not None else eval_cand_data.get("mape")
     cand_rmse = float(candidato.rmse) if candidato.rmse is not None else eval_cand_data.get("rmse")
     cand_mape_14d = float(candidato.mape_14d) if candidato.mape_14d is not None else eval_cand_data.get("mape_14d")
-    cand_wape = eval_cand_data.get("wape")
+    cand_wape = float(candidato.wape) if candidato.wape is not None else eval_cand_data.get("wape")
     cand_cob = eval_cand_data.get("cobertura_intervalo_95", eval_cand_data.get("cobertura_secuencial_fuera_muestra"))
 
     item_cand = MetricasModeloItem(
@@ -559,7 +616,19 @@ def get_comparacion_modelo(
         act_mape = float(activa.mape) if activa.mape is not None else None
         act_rmse = float(activa.rmse) if activa.rmse is not None else None
         act_mape_14d = float(activa.mape_14d) if activa.mape_14d is not None else None
-        act_wape = ReportingService.calcular_wape_fuera_muestra(db)
+        act_wape = float(activa.wape) if activa.wape is not None else None
+        if act_wape is None:
+            met_path = os.path.join(settings.STORAGE_DIR, "modelos", "metricas_modelo.json")
+            if os.path.exists(met_path):
+                try:
+                    with open(met_path, "r", encoding="utf-8") as f:
+                        mdata = json.load(f)
+                        if "wape" in mdata and mdata["wape"] is not None:
+                            act_wape = float(mdata["wape"])
+                except Exception:
+                    pass
+        if act_wape is None:
+            act_wape = ReportingService.calcular_wape_fuera_muestra(db)
         act_cob = MLForecastService.calcular_cobertura_secuencial_fuera_muestra(db)
 
         item_activa = MetricasModeloItem(
@@ -628,9 +697,35 @@ def get_comparacion_modelo(
 
     cumple_umbral = bool(cand_mape_14d is not None and cand_mape_14d <= umbral_mape)
     if act_mape_14d is not None and cand_mape_14d is not None:
+        diff_mape = round(cand_mape_14d - act_mape_14d, 4)
+        if abs(diff_mape) < 0.05:
+            comparacion_vigente = "equivalente"
+        elif diff_mape < 0:
+            comparacion_vigente = "mejora"
+        else:
+            comparacion_vigente = "empeora"
         mejora_vigente = bool(cand_mape_14d < act_mape_14d)
     else:
+        comparacion_vigente = "mejora" if cumple_umbral else "empeora"
         mejora_vigente = cumple_umbral
+
+    u_eval = candidato.umbral_mape_evaluacion
+    if u_eval is None and candidato.observacion:
+        match_disc = re.search(r"umbral de\s+([\d\.]+)%", candidato.observacion)
+        if match_disc:
+            try:
+                u_eval = float(match_disc.group(1))
+            except Exception:
+                pass
+        else:
+            match_apt = re.search(r"≤\s*([\d\.]+)%\)", candidato.observacion)
+            if match_apt:
+                try:
+                    u_eval = float(match_apt.group(1))
+                except Exception:
+                    pass
+    if u_eval is None:
+        u_eval = umbral_mape
 
     return ComparacionModeloResponse(
         id_candidato=candidato.id_modelo,
@@ -643,7 +738,9 @@ def get_comparacion_modelo(
         cortes=cortes,
         cumple_umbral=cumple_umbral,
         mejora_vigente=mejora_vigente,
-        umbral_mape=umbral_mape
+        comparacion_vigente=comparacion_vigente,
+        umbral_mape=umbral_mape,
+        umbral_mape_evaluacion=u_eval
     )
 
 
@@ -674,7 +771,7 @@ def publicar_modelo_candidato(
         modelo_previo.estado = "ANTERIOR"
 
     candidato.estado = "ACTIVA"
-    now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
+    now_str = datetime.now(ZoneInfo("America/Lima")).strftime("%d/%m/%Y %H:%M")
     user_name = current_admin.nombre_completo or current_admin.username
     candidato.observacion = f"Publicada el {now_str} por {user_name}"
 
@@ -691,16 +788,18 @@ def publicar_modelo_candidato(
         shutil.copyfile(cand_eval_path, active_calib_path)
 
     cob_val = 94.72
-    wape_val = ReportingService.calcular_wape_fuera_muestra(db)
+    wape_val = float(candidato.wape) if candidato.wape is not None else None
     if os.path.exists(cand_eval_path):
         try:
             with open(cand_eval_path, "r", encoding="utf-8") as f:
                 ed = json.load(f)
                 cob_val = ed.get("cobertura_intervalo_95", ed.get("cobertura_secuencial_fuera_muestra", 94.72))
-                if "wape" in ed and ed["wape"] is not None:
-                    wape_val = ed["wape"]
+                if wape_val is None and "wape" in ed and ed["wape"] is not None:
+                    wape_val = float(ed["wape"])
         except Exception:
             pass
+    if wape_val is None:
+        wape_val = ReportingService.calcular_wape_fuera_muestra(db)
 
     metricas_file = os.path.join(model_dir, "metricas_modelo.json")
     with open(metricas_file, "w", encoding="utf-8") as f:

@@ -27,6 +27,7 @@ class FichaModeloResponse(RetailProBaseModel):
     parametros: Dict[str, Any]
     importancia_variables: List[FeatureImportanceItem]
     observacion: Optional[str] = None
+    proximo_reentrenamiento_programado: Optional[datetime] = None
 
 
 class ModeloHistorialItem(RetailProBaseModel):
@@ -62,6 +63,7 @@ class ModeloMonitoreoResponse(RetailProBaseModel):
     umbral_mape_max: float = 15.0
     alerta_degradacion: bool
     total_cortes_evaluados: int
+    wape: Optional[float] = None
     cobertura_intervalo_95: Optional[float] = None
     cobertura_fuera_muestra: Optional[float] = None
     serie_mensual: List[MapeMensualMonitoreoItem]
@@ -133,7 +135,9 @@ class ComparacionModeloResponse(RetailProBaseModel):
     cortes: List[CorteComparacionItem]
     cumple_umbral: bool
     mejora_vigente: bool
+    comparacion_vigente: str = "equivalente"
     umbral_mape: float = 15.0
+    umbral_mape_evaluacion: Optional[float] = None
 
 
 class PublicarModeloResponse(RetailProBaseModel):

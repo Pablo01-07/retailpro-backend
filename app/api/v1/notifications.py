@@ -1,3 +1,4 @@
+import re
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
@@ -78,7 +79,26 @@ def get_notificaciones_cargas(
     for m in modelos_candidatos:
         mape_14d_val = float(m.mape_14d) if m.mape_14d is not None else (float(m.mape) if m.mape is not None else 0.0)
         x_num = int(mape_14d_val) if float(mape_14d_val).is_integer() else mape_14d_val
-        u_num = int(umbral_mape) if float(umbral_mape).is_integer() else umbral_mape
+
+        u_eval = m.umbral_mape_evaluacion
+        if u_eval is None and m.observacion:
+            match_disc = re.search(r"umbral de\s+([\d\.]+)%", m.observacion)
+            if match_disc:
+                try:
+                    u_eval = float(match_disc.group(1))
+                except Exception:
+                    pass
+            else:
+                match_apt = re.search(r"≤\s*([\d\.]+)%\)", m.observacion)
+                if match_apt:
+                    try:
+                        u_eval = float(match_apt.group(1))
+                    except Exception:
+                        pass
+        if u_eval is None:
+            u_eval = umbral_mape
+
+        u_num = int(u_eval) if float(u_eval).is_integer() else u_eval
 
         if m.estado == "DESCARTADA":
             tipo_n = "advertencia"
@@ -94,7 +114,7 @@ def get_notificaciones_cargas(
             fecha_ejecucion=m.fecha_entrenamiento,
             registros_procesados=0,
             porcentaje_calidad=100.0,
-            umbral_calidad=umbral_mape,
+            umbral_calidad=float(u_eval),
             tipo_notificacion=tipo_n,
             mensaje=msg
         ))
@@ -121,7 +141,26 @@ def get_notificaciones_modelos(
     for m in modelos_candidatos:
         mape_14d_val = float(m.mape_14d) if m.mape_14d is not None else (float(m.mape) if m.mape is not None else 0.0)
         x_num = int(mape_14d_val) if float(mape_14d_val).is_integer() else mape_14d_val
-        u_num = int(umbral_mape) if float(umbral_mape).is_integer() else umbral_mape
+
+        u_eval = m.umbral_mape_evaluacion
+        if u_eval is None and m.observacion:
+            match_disc = re.search(r"umbral de\s+([\d\.]+)%", m.observacion)
+            if match_disc:
+                try:
+                    u_eval = float(match_disc.group(1))
+                except Exception:
+                    pass
+            else:
+                match_apt = re.search(r"≤\s*([\d\.]+)%\)", m.observacion)
+                if match_apt:
+                    try:
+                        u_eval = float(match_apt.group(1))
+                    except Exception:
+                        pass
+        if u_eval is None:
+            u_eval = umbral_mape
+
+        u_num = int(u_eval) if float(u_eval).is_integer() else u_eval
 
         if m.estado == "DESCARTADA":
             tipo_n = "advertencia"
@@ -137,7 +176,7 @@ def get_notificaciones_modelos(
             fecha_ejecucion=m.fecha_entrenamiento,
             registros_procesados=0,
             porcentaje_calidad=100.0,
-            umbral_calidad=umbral_mape,
+            umbral_calidad=float(u_eval),
             tipo_notificacion=tipo_n,
             mensaje=msg
         ))

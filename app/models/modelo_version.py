@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Numeric, DateTime
+from sqlalchemy import Column, Integer, String, Numeric, DateTime, Float
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 
@@ -15,6 +15,8 @@ class ModeloVersion(Base):
     mape = Column(Numeric(5, 2), nullable=True)
     rmse = Column(Numeric(8, 4), nullable=True)
     mape_14d = Column(Numeric(5, 2), nullable=True)
+    umbral_mape_evaluacion = Column(Float, nullable=True)
+    wape = Column(Float, nullable=True)
     estado = Column(String(20), nullable=False)
     observacion = Column(String(255), nullable=True)
 
