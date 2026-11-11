@@ -1068,7 +1068,9 @@ class MLForecastService:
         cls,
         db: Session,
         motivo: str = "reentrenamiento_manual",
-        id_carga: Optional[int] = None
+        id_carga: Optional[int] = None,
+        usuario: Optional[str] = None,
+        registros_nuevos: Optional[int] = None
     ) -> Dict[str, Any]:
         with cls._lock_entrenamiento:
             if cls._entrenamiento_en_curso:
@@ -1077,6 +1079,36 @@ class MLForecastService:
                     detail="Ya existe un reentrenamiento en ejecución."
                 )
             cls._entrenamiento_en_curso = True
+
+        if id_carga is None:
+            from app.models.carga_datos import CargaDatos
+            from app.services.etl_service import get_storage_carga_dir
+            carga_obj = CargaDatos(
+                tipo_carga="entrenamiento",
+                fecha_ejecucion=get_utc_now(),
+                estado="EN_PROGRESO",
+                registros_procesados=0,
+                registros_rechazados=0,
+                porcentaje_calidad=100.0,
+                detalle_error=None
+            )
+            db.add(carga_obj)
+            db.commit()
+            db.refresh(carga_obj)
+            id_carga = carga_obj.id_carga
+
+            carga_dir = get_storage_carga_dir(id_carga)
+            meta_data = {
+                "id_carga": id_carga,
+                "nombre_archivo": "proceso_reentrenamiento_modelo",
+                "nombre_original": "proceso_reentrenamiento_modelo",
+                "tamano_bytes": 0,
+                "tipo_carga": "entrenamiento",
+                "tipo_carga_etiqueta": "Reentrenamiento de Modelo",
+                "fecha_subida": get_utc_now().strftime("%Y-%m-%dT%H:%M:%SZ")
+            }
+            with open(os.path.join(carga_dir, "meta.json"), "w", encoding="utf-8") as f:
+                json.dump(meta_data, f, indent=4, ensure_ascii=False)
 
         etapas = []
         t_global_start = time.time()
@@ -1249,12 +1281,29 @@ class MLForecastService:
                 "detalle": f"Resultado: {mv_cand.estado}. Observación: {mv_cand.observacion}"
             })
 
+            if motivo == "reentrenamiento_programado":
+                motivo_str = "Programado (cada 4 semanas)"
+            elif motivo == "reentrenamiento_por_datos":
+                n_str = str(registros_nuevos) if registros_nuevos is not None else "840"
+                motivo_str = f"Por acumulación de datos: {n_str} registros nuevos"
+            elif motivo == "reentrenamiento_manual":
+                u_str = usuario or "Administrador"
+                motivo_str = f"Manual por {u_str}"
+            else:
+                motivo_str = motivo
+
+            estado_cap = "Apta" if mv_cand.estado == "APTA" else "Descartada"
+            x_pct = int(avg_mape_14d) if float(avg_mape_14d).is_integer() else avg_mape_14d
+            resultado_str = f"{mv_cand.version} {estado_cap} – MAPE 14 días {x_pct}%"
+
             if id_carga:
+                from app.models.carga_datos import CargaDatos
+                from app.services.etl_service import get_storage_carga_dir
                 carga = db.query(CargaDatos).filter(CargaDatos.id_carga == id_carga).first()
                 if carga:
                     carga.estado = "COMPLETADO"
                     carga.registros_procesados = len(df_train_full)
-                    carga.detalle_error = f"Modelo candidato {mv_cand.version} generado: {mv_cand.estado} (MAPE 14d: {avg_mape_14d}%)"
+                    carga.detalle_error = f"{motivo_str} – {resultado_str}"
                     db.commit()
                 carga_dir = get_storage_carga_dir(id_carga)
                 with open(os.path.join(carga_dir, "etapas.json"), "w", encoding="utf-8") as f:
@@ -1264,6 +1313,7 @@ class MLForecastService:
             return {
                 "id_modelo": mv_cand.id_modelo,
                 "version": mv_cand.version,
+                "id_carga": id_carga,
                 "estado": mv_cand.estado,
                 "observacion": mv_cand.observacion,
                 "mae": avg_mae,
@@ -1279,6 +1329,8 @@ class MLForecastService:
             }
         except Exception as e:
             if id_carga:
+                from app.models.carga_datos import CargaDatos
+                from app.services.etl_service import get_storage_carga_dir
                 carga = db.query(CargaDatos).filter(CargaDatos.id_carga == id_carga).first()
                 if carga:
                     carga.estado = "FALLIDO"

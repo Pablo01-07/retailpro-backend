@@ -735,3 +735,184 @@ def test_comparacion_cumple_umbral_usa_umbral_evaluacion_cuando_actual_es_mayor(
     assert data["umbral_mape_evaluacion"] == 10.0
     assert data["umbral_mape"] == 15.0
     assert data["cumple_umbral"] is False
+
+
+def test_registro_ejecucion_reentrenamiento_programado(db_session):
+    from app.services.scheduler import tarea_reentrenamiento_semanal
+
+    mock_grid = pd.DataFrame({
+        "id_producto": [1],
+        "fecha": [date(2026, 1, 1)],
+        "precio_unitario": [10.0],
+        "categoria": ["snacks"]
+    })
+    prod_dict = {1: {"nombre": "P1", "precio_unitario": 10.0, "categoria": "snacks"}}
+    backtest_res = [
+        {"mape": 10.0, "rmse": 2.0, "mae": 1.5, "wape": 9.5, "mape_14d": 8.5}
+    ]
+
+    with patch.object(MLForecastService, "load_clean_sales_grid", return_value=(mock_grid, prod_dict, {1: 0}, {"snacks": 0})), \
+         patch.object(MLForecastService, "run_walk_forward_backtest", return_value=(backtest_res, {}, {}, {}, 95.0)), \
+         patch.object(MLForecastService, "generate_training_matrix", return_value=pd.DataFrame({c: [0.0] for c in MLForecastService.FEATURE_COLS + ["y_real"]})):
+
+        cargas_prev_count = db_session.query(CargaDatos).filter(CargaDatos.tipo_carga == "entrenamiento").count()
+        carga = tarea_reentrenamiento_semanal(db=db_session)
+        assert carga is not None
+        assert carga.estado == "COMPLETADO"
+        assert carga.tipo_carga == "entrenamiento"
+        assert "Programado (cada 4 semanas)" in carga.detalle_error
+        assert "Apta" in carga.detalle_error or "Descartada" in carga.detalle_error
+
+        cargas_post_count = db_session.query(CargaDatos).filter(CargaDatos.tipo_carga == "entrenamiento").count()
+        assert cargas_post_count == cargas_prev_count + 1
+
+        carga_dir = get_storage_carga_dir(carga.id_carga)
+        etapas_path = os.path.join(carga_dir, "etapas.json")
+        assert os.path.exists(etapas_path)
+        with open(etapas_path, "r", encoding="utf-8") as f:
+            etapas_data = json.load(f)
+        assert len(etapas_data) == 4
+        nombres_etapas = [e["etapa"] for e in etapas_data]
+        assert "Carga de datos de ventas limpias" in nombres_etapas
+        assert "Validación temporal Walk-Forward (12 cortes)" in nombres_etapas
+        assert "Entrenamiento final del modelo candidato" in nombres_etapas
+        assert "Evaluación contra umbrales de precisión" in nombres_etapas
+
+
+def test_registro_ejecucion_reentrenamiento_por_acumulacion(db_session):
+    mock_grid = pd.DataFrame({
+        "id_producto": [1],
+        "fecha": [date(2026, 1, 1)],
+        "precio_unitario": [10.0],
+        "categoria": ["snacks"]
+    })
+    prod_dict = {1: {"nombre": "P1", "precio_unitario": 10.0, "categoria": "snacks"}}
+    backtest_res = [
+        {"mape": 11.0, "rmse": 2.5, "mae": 1.8, "wape": 10.5, "mape_14d": 9.2}
+    ]
+
+    with patch.object(MLForecastService, "load_clean_sales_grid", return_value=(mock_grid, prod_dict, {1: 0}, {"snacks": 0})), \
+         patch.object(MLForecastService, "run_walk_forward_backtest", return_value=(backtest_res, {}, {}, {}, 95.0)), \
+         patch.object(MLForecastService, "generate_training_matrix", return_value=pd.DataFrame({c: [0.0] for c in MLForecastService.FEATURE_COLS + ["y_real"]})):
+
+        res = MLForecastService.entrenar_modelo_candidato(
+            db=db_session,
+            motivo="reentrenamiento_por_datos",
+            registros_nuevos=950
+        )
+        assert res is not None
+        id_carga = res.get("id_carga")
+        assert id_carga is not None
+
+        carga = db_session.query(CargaDatos).filter(CargaDatos.id_carga == id_carga).first()
+        assert carga is not None
+        assert carga.estado == "COMPLETADO"
+        assert carga.tipo_carga == "entrenamiento"
+        assert "Por acumulación de datos: 950 registros nuevos" in carga.detalle_error
+        assert "MAPE 14 días" in carga.detalle_error
+
+        carga_dir = get_storage_carga_dir(id_carga)
+        assert os.path.exists(os.path.join(carga_dir, "etapas.json"))
+
+
+def test_registro_ejecucion_reentrenamiento_manual(client, admin_token, db_session):
+    mock_grid = pd.DataFrame({
+        "id_producto": [1],
+        "fecha": [date(2026, 1, 1)],
+        "precio_unitario": [10.0],
+        "categoria": ["snacks"]
+    })
+    prod_dict = {1: {"nombre": "P1", "precio_unitario": 10.0, "categoria": "snacks"}}
+    backtest_res = [
+        {"mape": 10.5, "rmse": 2.2, "mae": 1.6, "wape": 10.0, "mape_14d": 9.0}
+    ]
+
+    with patch.object(MLForecastService, "load_clean_sales_grid", return_value=(mock_grid, prod_dict, {1: 0}, {"snacks": 0})), \
+         patch.object(MLForecastService, "run_walk_forward_backtest", return_value=(backtest_res, {}, {}, {}, 95.0)), \
+         patch.object(MLForecastService, "generate_training_matrix", return_value=pd.DataFrame({c: [0.0] for c in MLForecastService.FEATURE_COLS + ["y_real"]})):
+
+        res = MLForecastService.entrenar_modelo_candidato(
+            db=db_session,
+            motivo="reentrenamiento_manual",
+            usuario="Pablo Admin"
+        )
+        id_carga = res.get("id_carga")
+        assert id_carga is not None
+
+        carga = db_session.query(CargaDatos).filter(CargaDatos.id_carga == id_carga).first()
+        assert carga is not None
+        assert carga.estado == "COMPLETADO"
+        assert "Manual por Pablo Admin" in carga.detalle_error
+        assert "MAPE 14 días" in carga.detalle_error
+
+
+def test_publicar_modelo_registra_ejecucion_pronostico(client, admin_token, db_session):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    activa = ModeloVersion(
+        version="v1.0.0",
+        fecha_entrenamiento=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=10),
+        motivo_entrenamiento="inicial",
+        estado="ACTIVA",
+        mae=3.5,
+        mape=13.0,
+        mape_14d=12.0
+    )
+    candidata = ModeloVersion(
+        version="v1.15.0",
+        fecha_entrenamiento=datetime.now(timezone.utc).replace(tzinfo=None),
+        motivo_entrenamiento="reentrenamiento_manual",
+        estado="APTA",
+        mae=2.8,
+        mape=11.0,
+        mape_14d=9.8,
+        observacion="Cumple el umbral"
+    )
+    db_session.add_all([activa, candidata])
+    db_session.commit()
+
+    with patch.object(MLForecastService, "generar_pronosticos_lote", return_value=840):
+        resp = client.post(f"/api/v1/modelos/{candidata.id_modelo}/publicar", headers=headers)
+        assert resp.status_code == 200
+
+    carga_pron = db_session.query(CargaDatos).filter(
+        CargaDatos.tipo_carga == "pronostico"
+    ).order_by(CargaDatos.id_carga.desc()).first()
+    assert carga_pron is not None
+    assert carga_pron.estado == "COMPLETADO"
+    assert carga_pron.registros_procesados == 840
+    assert carga_pron.detalle_error == f"Regeneración por publicación de {candidata.version}"
+
+
+def test_historial_devuelve_motivo_entrenamiento_todas_versiones(client, analyst_token, db_session):
+    headers = {"Authorization": f"Bearer {analyst_token}"}
+
+    m1 = ModeloVersion(
+        version="v1.16.0",
+        fecha_entrenamiento=datetime.now(timezone.utc).replace(tzinfo=None),
+        motivo_entrenamiento="reentrenamiento_programado",
+        estado="ANTERIOR"
+    )
+    m2 = ModeloVersion(
+        version="v1.17.0",
+        fecha_entrenamiento=datetime.now(timezone.utc).replace(tzinfo=None),
+        motivo_entrenamiento="reentrenamiento_por_datos",
+        estado="APTA"
+    )
+    m3 = ModeloVersion(
+        version="v1.18.0",
+        fecha_entrenamiento=datetime.now(timezone.utc).replace(tzinfo=None),
+        motivo_entrenamiento="reentrenamiento_manual",
+        estado="DESCARTADA"
+    )
+    db_session.add_all([m1, m2, m3])
+    db_session.commit()
+
+    resp = client.get("/api/v1/modelos/historial", headers=headers)
+    assert resp.status_code == 200
+    items = resp.json()
+    assert len(items) > 0
+    for item in items:
+        assert "motivo_entrenamiento" in item
+        assert item["motivo_entrenamiento"] is not None
+        assert len(item["motivo_entrenamiento"]) > 0

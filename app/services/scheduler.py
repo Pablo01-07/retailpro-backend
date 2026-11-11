@@ -242,61 +242,37 @@ def tarea_reentrenamiento_semanal(db: Optional[Session] = None):
         db = SessionLocal()
         close_db = True
     try:
-        carga = CargaDatos(
-            tipo_carga="entrenamiento",
-            fecha_ejecucion=get_utc_now(),
-            estado="EN_PROGRESO",
-            registros_procesados=0,
-            registros_rechazados=0,
-            porcentaje_calidad=100.0,
-            detalle_error=None
-        )
-        db.add(carga)
-        db.commit()
-        db.refresh(carga)
-
-        carga_dir = get_storage_carga_dir(carga.id_carga)
-        meta_data = {
-            "id_carga": carga.id_carga,
-            "nombre_archivo": "proceso_batch_reentrenamiento_semanal",
-            "nombre_original": "proceso_batch_reentrenamiento_semanal",
-            "tamano_bytes": 0,
-            "tipo_carga": "entrenamiento",
-            "tipo_carga_etiqueta": "Reentrenamiento de Modelo",
-            "fecha_subida": get_utc_now().strftime("%Y-%m-%dT%H:%M:%SZ")
-        }
-        with open(os.path.join(carga_dir, "meta.json"), "w", encoding="utf-8") as f:
-            json.dump(meta_data, f, indent=4, ensure_ascii=False)
-
         from app.services.ml_service import MLForecastService
         res = MLForecastService.entrenar_modelo_candidato(
             db=db,
-            motivo="reentrenamiento_programado",
-            id_carga=carga.id_carga
+            motivo="reentrenamiento_programado"
         )
+
+        id_carga = res.get("id_carga")
+        carga = db.query(CargaDatos).filter(CargaDatos.id_carga == id_carga).first() if id_carga else None
 
         create_audit_log(
             db=db,
             accion="proceso_batch_reentrenamiento",
             modulo_afectado="procesos",
-            detalle={"id_carga": carga.id_carga, "estado": "COMPLETADO", "id_modelo": res.get("id_modelo")}
+            detalle={"id_carga": id_carga, "estado": "COMPLETADO", "id_modelo": res.get("id_modelo")}
         )
-        logger.info(f"[Scheduler] Reentrenamiento registrado exitosamente (Carga {carga.id_carga}).")
+        logger.info(f"[Scheduler] Reentrenamiento registrado exitosamente (Carga {id_carga}).")
         return carga
     except Exception as e:
         logger.error(f"[Scheduler] Error en Reentrenamiento: {e}")
         db.rollback()
-        if 'carga' in locals() and carga:
-            carga.estado = "FALLIDO"
-            carga.detalle_error = str(e)
-            db.commit()
+        carga_fallida = db.query(CargaDatos).filter(
+            CargaDatos.tipo_carga == "entrenamiento"
+        ).order_by(CargaDatos.id_carga.desc()).first()
+        if carga_fallida:
             create_audit_log(
                 db=db,
                 accion="proceso_batch_reentrenamiento",
                 modulo_afectado="procesos",
-                detalle={"id_carga": carga.id_carga, "estado": "FALLIDO", "error": str(e)}
+                detalle={"id_carga": carga_fallida.id_carga, "estado": "FALLIDO", "error": str(e)}
             )
-            return carga
+            return carga_fallida
         return None
     finally:
         if close_db:

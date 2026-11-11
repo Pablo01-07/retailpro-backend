@@ -831,7 +831,8 @@ def verificar_reentrenamiento_por_acumulacion(db: Session):
                     try:
                         MLForecastService.entrenar_modelo_candidato(
                             db=bg_db,
-                            motivo="reentrenamiento_por_datos"
+                            motivo="reentrenamiento_por_datos",
+                            registros_nuevos=nuevos
                         )
                     except Exception as exc:
                         logger.error(f"Error en reentrenamiento por acumulación: {exc}")

@@ -16,6 +16,7 @@ from app.models.usuario import Usuario
 from app.models.modelo_version import ModeloVersion
 from app.models.umbral_configuracion import UmbralConfiguracion
 from app.models.auditoria import Auditoria
+from app.models.carga_datos import CargaDatos
 from app.schemas.model import (
     FichaModeloResponse,
     ModeloHistorialItem,
@@ -36,7 +37,7 @@ from app.schemas.model import (
 from app.services.ml_service import MLForecastService
 from app.services.reporting_service import ReportingService
 from app.services.scheduler import ensure_scheduler_started, get_job_proxima_ejecucion
-from app.services.etl_service import get_utc_now
+from app.services.etl_service import get_utc_now, get_storage_carga_dir
 
 DESCRIPCIONES_FEATURES = {
     "rolling_mean_28": "Promedio móvil de ventas de 28 días",
@@ -338,7 +339,7 @@ def list_historial_modelos(
             id_modelo=m.id_modelo,
             version=m.version,
             fecha_entrenamiento=m.fecha_entrenamiento,
-            motivo_entrenamiento=m.motivo_entrenamiento,
+            motivo_entrenamiento=m.motivo_entrenamiento or "reentrenamiento_manual",
             mae=float(m.mae) if m.mae else None,
             mape=float(m.mape) if m.mape else None,
             rmse=float(m.rmse) if m.rmse else None,
@@ -538,6 +539,7 @@ def trigger_reentrenamiento_modelo(
             detail="Ya existe un reentrenamiento en ejecución."
         )
 
+    user_name = current_admin.nombre_completo or current_admin.username
     motivo = (payload.motivo if payload and payload.motivo else "reentrenamiento_manual")
 
     def _bg_entrenar():
@@ -546,7 +548,8 @@ def trigger_reentrenamiento_modelo(
             try:
                 MLForecastService.entrenar_modelo_candidato(
                     db=bg_db,
-                    motivo=motivo
+                    motivo=motivo,
+                    usuario=user_name
                 )
             except Exception:
                 pass
@@ -814,10 +817,46 @@ def publicar_modelo_candidato(
             "cobertura_intervalo_95": cob_val
         }, f, indent=4, ensure_ascii=False)
 
+    carga_pron = CargaDatos(
+        tipo_carga="pronostico",
+        fecha_ejecucion=get_utc_now(),
+        estado="EN_PROGRESO",
+        registros_procesados=0,
+        registros_rechazados=0,
+        porcentaje_calidad=100.0,
+        detalle_error=f"Regeneración por publicación de {candidato.version}"
+    )
+    db.add(carga_pron)
+    db.commit()
+    db.refresh(carga_pron)
+
+    carga_dir = get_storage_carga_dir(carga_pron.id_carga)
+    meta_data = {
+        "id_carga": carga_pron.id_carga,
+        "nombre_archivo": f"proceso_regeneracion_pronostico_{candidato.version}",
+        "nombre_original": f"proceso_regeneracion_pronostico_{candidato.version}",
+        "tamano_bytes": 0,
+        "tipo_carga": "pronostico",
+        "tipo_carga_etiqueta": "Pronóstico de Demanda",
+        "fecha_subida": get_utc_now().strftime("%Y-%m-%dT%H:%M:%SZ")
+    }
+    with open(os.path.join(carga_dir, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump(meta_data, f, indent=4, ensure_ascii=False)
+
     try:
-        MLForecastService.generar_pronosticos_lote(db=db, modelo_activo=candidato)
-    except Exception:
-        pass
+        total_pron = MLForecastService.generar_pronosticos_lote(
+            db=db,
+            modelo_activo=candidato,
+            id_carga=carga_pron.id_carga
+        )
+        carga_pron.estado = "COMPLETADO"
+        carga_pron.registros_procesados = total_pron
+        carga_pron.detalle_error = f"Regeneración por publicación de {candidato.version}"
+        db.commit()
+    except Exception as e:
+        carga_pron.estado = "FALLIDO"
+        carga_pron.detalle_error = str(e)
+        db.commit()
 
     try:
         from app.services.alert_service import AlertService
