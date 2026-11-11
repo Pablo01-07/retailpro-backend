@@ -42,7 +42,18 @@ def test_get_and_update_configuracion_procesos(client, admin_token):
     assert put_resp.json()["alertas_notificacion_email"] == "soporte@fasretail.com"
 
 
-def test_ejecutar_proceso_manual(client, admin_token):
+def test_ejecutar_proceso_manual(client, admin_token, db_session):
+    from datetime import datetime
+    from app.models.modelo_version import ModeloVersion
+    modelo = ModeloVersion(
+        version="v1.0.0",
+        fecha_entrenamiento=datetime.utcnow(),
+        motivo_entrenamiento="entrenamiento_inicial",
+        estado="ACTIVA"
+    )
+    db_session.add(modelo)
+    db_session.commit()
+
     resp = client.post(
         "/api/v1/procesos/ejecutar/pronostico",
         headers={"Authorization": f"Bearer {admin_token}"}

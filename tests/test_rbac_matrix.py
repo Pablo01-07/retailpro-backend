@@ -1,4 +1,5 @@
 import os
+import shutil
 import json
 import pytest
 from datetime import datetime, date, timedelta
@@ -47,6 +48,26 @@ def rbac_seed(db_session):
     db_session.commit()
     db_session.refresh(m1)
     db_session.refresh(m2)
+
+    from app.core.config import settings
+    model_dir = os.path.join(settings.STORAGE_DIR, "modelos")
+    os.makedirs(model_dir, exist_ok=True)
+    m2_file = os.path.join(model_dir, f"modelo_{m2.id_modelo}.json")
+    act_file = os.path.join(model_dir, "modelo_activo.json")
+    backup_act = None
+    if os.path.exists(act_file):
+        with open(act_file, "rb") as f:
+            backup_act = f.read()
+        shutil.copyfile(act_file, m2_file)
+    else:
+        import pandas as pd
+        import xgboost as xgb
+        from app.services.ml_service import MLForecastService
+        df_d = pd.DataFrame({c: [0.0] for c in MLForecastService.FEATURE_COLS + ["y_real"]})
+        m_dummy = xgb.XGBRegressor(n_estimators=10, max_depth=3)
+        m_dummy.fit(df_d[MLForecastService.FEATURE_COLS], df_d["y_real"])
+        m_dummy.save_model(m2_file)
+        m_dummy.save_model(act_file)
 
     pron = Pronostico(
         id_producto=prod.id_producto,
@@ -102,7 +123,7 @@ def rbac_seed(db_session):
     with open(report_file, "w", encoding="utf-8") as f:
         f.write("id,sku,fecha,cantidad\n1,PRD-001,2026-10-23,10\n")
 
-    return {
+    yield {
         "prod": prod,
         "m1": m1,
         "m2": m2,
@@ -110,6 +131,15 @@ def rbac_seed(db_session):
         "alerta": alerta,
         "carga": carga
     }
+
+    if backup_act is not None:
+        with open(act_file, "wb") as f:
+            f.write(backup_act)
+    if os.path.exists(m2_file):
+        try:
+            os.remove(m2_file)
+        except Exception:
+            pass
 
 
 RBAC_MATRIX = [

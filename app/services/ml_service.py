@@ -1264,7 +1264,10 @@ class MLForecastService:
 
             if avg_mape_14d > umbral_mape:
                 mv_cand.estado = "DESCARTADA"
-                mv_cand.observacion = f"MAPE (demanda 14 días) {x_num}% supera el umbral de {u_num}%. Se mantiene la versión {version_vigente} en producción."
+                if modelo_activo:
+                    mv_cand.observacion = f"MAPE (demanda 14 días) {x_num}% supera el umbral de {u_num}%. Se mantiene la versión {version_vigente} en producción."
+                else:
+                    mv_cand.observacion = f"MAPE (demanda 14 días) {x_num}% supera el umbral de {u_num}%. No hay un modelo publicado actualmente."
             else:
                 mv_cand.estado = "APTA"
                 mv_cand.observacion = f"Cumple el umbral ({x_num}% ≤ {u_num}%). Pendiente de aprobación para publicación."
@@ -1363,7 +1366,10 @@ class MLForecastService:
         if modelo_activo is None:
             modelo_activo = db.query(ModeloVersion).filter(ModeloVersion.estado == "ACTIVA").first()
         if not modelo_activo:
-            return 0
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="No hay un modelo publicado actualmente"
+            )
 
         productos = db.query(Producto).filter(Producto.estado != "descontinuado").order_by(Producto.sku.asc()).all()
         ids_insuf = cls.obtener_ids_productos_con_historial_insuficiente(db)
@@ -1428,21 +1434,10 @@ class MLForecastService:
             elif os.path.exists(fallback_file):
                 model.load_model(fallback_file)
             else:
-                df_train = cls.generate_training_matrix(df_grid, end_date=max_date, sample_step_days=7)
-                if not df_train.empty:
-                    model.fit(df_train[cls.FEATURE_COLS], df_train["y_real"])
-                    os.makedirs(model_dir, exist_ok=True)
-                    model.save_model(model_file)
-                    model.save_model(fallback_file)
-                else:
-                    min_date = df_grid["fecha"].min()
-                    cutoff_d = min_date + timedelta(days=28)
-                    df_c = cls.extract_features_at_cutoff(df_grid, cutoff_date=cutoff_d, horizon_days=min(14, max(1, (max_date - cutoff_d).days)), include_target=True)
-                    df_c = df_c[df_c["y_real"].notna()]
-                    if not df_c.empty:
-                        model.fit(df_c[cls.FEATURE_COLS], df_c["y_real"])
-                    else:
-                        raise ValueError("No hay suficientes datos temporales para entrenar la matriz de inferencia.")
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="No hay un modelo publicado actualmente"
+                )
 
             preds = np.maximum(0.0, model.predict(X_future))
             df_future["y_pred"] = preds

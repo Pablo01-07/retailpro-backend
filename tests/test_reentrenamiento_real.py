@@ -905,14 +905,306 @@ def test_historial_devuelve_motivo_entrenamiento_todas_versiones(client, analyst
         motivo_entrenamiento="reentrenamiento_manual",
         estado="DESCARTADA"
     )
-    db_session.add_all([m1, m2, m3])
+    m4 = ModeloVersion(
+        version="v1.19.0",
+        fecha_entrenamiento=datetime.now(timezone.utc).replace(tzinfo=None),
+        motivo_entrenamiento="reentrenamiento_manual",
+        estado="RETIRADA"
+    )
+    db_session.add_all([m1, m2, m3, m4])
     db_session.commit()
 
     resp = client.get("/api/v1/modelos/historial", headers=headers)
     assert resp.status_code == 200
     items = resp.json()
     assert len(items) > 0
+    estados_en_historial = set(it["estado"] for it in items)
+    assert "RETIRADA" in estados_en_historial
     for item in items:
         assert "motivo_entrenamiento" in item
         assert item["motivo_entrenamiento"] is not None
         assert len(item["motivo_entrenamiento"]) > 0
+
+
+def test_retirar_modelo_activa_exitoso_y_ficha_404(client, admin_token, db_session):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    db_session.query(ModeloVersion).filter(ModeloVersion.estado == "ACTIVA").update({"estado": "ANTERIOR"})
+    db_session.commit()
+
+    m_act = ModeloVersion(
+        version="v1.20.0",
+        fecha_entrenamiento=datetime.now(timezone.utc).replace(tzinfo=None),
+        motivo_entrenamiento="inicial",
+        estado="ACTIVA",
+        mae=2.5,
+        mape=12.0,
+        rmse=3.0,
+        mape_14d=11.5
+    )
+    db_session.add(m_act)
+    db_session.commit()
+    db_session.refresh(m_act)
+
+    model_dir = os.path.join(settings.STORAGE_DIR, "modelos")
+    os.makedirs(model_dir, exist_ok=True)
+    with open(os.path.join(model_dir, "modelo_activo.json"), "w", encoding="utf-8") as f:
+        f.write('{"modelo": "v1.20.0"}')
+    with open(os.path.join(model_dir, "calibracion_activa.json"), "w", encoding="utf-8") as f:
+        f.write('{"cobertura_intervalo_95": 95.0}')
+
+    resp = client.post(
+        f"/api/v1/modelos/{m_act.id_modelo}/retirar",
+        headers=headers,
+        json={"comentario": "Retiro programado por mantenimiento de planta"}
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["id_modelo"] == m_act.id_modelo
+    assert data["estado"] == "RETIRADA"
+    assert "retirado de producción" in data["mensaje"]
+    assert "No hay un modelo publicado actualmente" in data["mensaje"]
+
+    db_session.refresh(m_act)
+    assert m_act.estado == "RETIRADA"
+    assert "Retirada de producción el" in m_act.observacion
+    assert "Retiro programado por mantenimiento de planta" in m_act.observacion
+
+    act_en_db = db_session.query(ModeloVersion).filter(ModeloVersion.estado == "ACTIVA").first()
+    assert act_en_db is None
+
+    assert not os.path.exists(os.path.join(model_dir, "modelo_activo.json"))
+    assert not os.path.exists(os.path.join(model_dir, "calibracion_activa.json"))
+    assert os.path.exists(os.path.join(model_dir, f"modelo_{m_act.id_modelo}.json"))
+
+    audit = db_session.query(Auditoria).filter(Auditoria.accion == "Retiro de modelo de producción").order_by(Auditoria.id_auditoria.desc()).first()
+    assert audit is not None
+    assert audit.detalle["id_modelo"] == m_act.id_modelo
+
+    rficha = client.get("/api/v1/modelos/ficha", headers=headers)
+    assert rficha.status_code == 404
+    assert "No existe un modelo activo en el sistema." in rficha.json()["detail"]
+
+    ractiva = client.get("/api/v1/modelos/activa", headers=headers)
+    assert ractiva.status_code == 404
+    assert "No existe un modelo activo en el sistema." in ractiva.json()["detail"]
+
+
+def test_retirar_modelo_no_activa_falla_400(client, admin_token, db_session):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    m_ant = ModeloVersion(
+        version="v1.21.0",
+        fecha_entrenamiento=datetime.now(timezone.utc).replace(tzinfo=None),
+        motivo_entrenamiento="reentrenamiento_manual",
+        estado="ANTERIOR"
+    )
+    db_session.add(m_ant)
+    db_session.commit()
+    db_session.refresh(m_ant)
+
+    resp = client.post(
+        f"/api/v1/modelos/{m_ant.id_modelo}/retirar",
+        headers=headers,
+        json={"comentario": "Intento inválido"}
+    )
+    assert resp.status_code == 400
+    assert "Solo se puede retirar la versión con estado ACTIVA" in resp.json()["detail"]
+
+
+def test_pronostico_sin_modelo_responde_409_sin_entrenar_respaldo(client, admin_token, db_session):
+    from app.services.scheduler import tarea_pronostico_diario
+
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    db_session.query(ModeloVersion).filter(ModeloVersion.estado == "ACTIVA").update({"estado": "RETIRADA"})
+    db_session.commit()
+
+    model_dir = os.path.join(settings.STORAGE_DIR, "modelos")
+    act_file = os.path.join(model_dir, "modelo_activo.json")
+    if os.path.exists(act_file):
+        try:
+            os.remove(act_file)
+        except Exception:
+            pass
+
+    total_versiones_antes = db_session.query(ModeloVersion).count()
+
+    resp_lote = client.post("/api/v1/pronosticos/generar", headers=headers)
+    assert resp_lote.status_code == 409
+    assert "No hay un modelo publicado actualmente" in resp_lote.json()["detail"]
+
+    resp_proc = client.post("/api/v1/procesos/ejecutar/pronostico", headers=headers)
+    assert resp_proc.status_code == 200
+    assert resp_proc.json()["estado"] == "FALLIDO"
+    assert "No hay un modelo publicado actualmente" in resp_proc.json()["mensaje"]
+
+    resp_sku = client.post("/api/v1/pronosticos/SKU-001/generar", headers=headers)
+    assert resp_sku.status_code == 409
+    assert "No hay un modelo publicado actualmente" in resp_sku.json()["detail"]
+
+    carga = tarea_pronostico_diario(db=db_session)
+    assert carga is not None
+    assert carga.estado == "FALLIDO"
+    assert carga.detalle_error == "No hay un modelo publicado actualmente"
+    assert carga.registros_procesados == 0
+
+    assert not os.path.exists(act_file)
+    total_versiones_despues = db_session.query(ModeloVersion).count()
+    assert total_versiones_despues == total_versiones_antes
+
+
+def test_activar_version_retirada_restaura_archivos_y_regenera_pronosticos(client, admin_token, db_session):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    db_session.query(ModeloVersion).filter(ModeloVersion.estado == "ACTIVA").update({"estado": "ANTERIOR"})
+    db_session.commit()
+
+    m_ret = ModeloVersion(
+        version="v1.22.0",
+        fecha_entrenamiento=datetime.now(timezone.utc).replace(tzinfo=None),
+        motivo_entrenamiento="reentrenamiento_manual",
+        estado="RETIRADA",
+        mae=2.9,
+        mape=11.4,
+        rmse=3.1,
+        mape_14d=10.2,
+        wape=10.0
+    )
+    db_session.add(m_ret)
+    db_session.commit()
+    db_session.refresh(m_ret)
+
+    model_dir = os.path.join(settings.STORAGE_DIR, "modelos")
+    os.makedirs(model_dir, exist_ok=True)
+    m_ret_file = os.path.join(model_dir, f"modelo_{m_ret.id_modelo}.json")
+    with open(m_ret_file, "w", encoding="utf-8") as f:
+        f.write('{"modelo": "v1.22.0_retirado"}')
+
+    eval_file = os.path.join(model_dir, f"evaluacion_modelo_{m_ret.id_modelo}.json")
+    with open(eval_file, "w", encoding="utf-8") as f:
+        json.dump({"cobertura_intervalo_95": 95.8, "wape": 10.0}, f)
+
+    with patch.object(MLForecastService, "generar_pronosticos_lote", return_value=840):
+        resp = client.patch(f"/api/v1/modelos/{m_ret.id_modelo}/activar", headers=headers)
+        assert resp.status_code == 200
+
+    data = resp.json()
+    assert data["id_modelo"] == m_ret.id_modelo
+    assert data["estado"] == "ACTIVA"
+    assert "Reactivada el" in data["observacion"]
+
+    db_session.refresh(m_ret)
+    assert m_ret.estado == "ACTIVA"
+
+    act_path = os.path.join(model_dir, "modelo_activo.json")
+    assert os.path.exists(act_path)
+    with open(act_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    assert "v1.22.0_retirado" in content
+
+    calib_path = os.path.join(model_dir, "calibracion_activa.json")
+    assert os.path.exists(calib_path)
+
+    met_path = os.path.join(model_dir, "metricas_modelo.json")
+    assert os.path.exists(met_path)
+    with open(met_path, "r", encoding="utf-8") as f:
+        mdata = json.load(f)
+    assert mdata["version"] == "v1.22.0"
+
+    carga_pron = db_session.query(CargaDatos).filter(
+        CargaDatos.tipo_carga == "pronostico"
+    ).order_by(CargaDatos.id_carga.desc()).first()
+    assert carga_pron is not None
+    assert carga_pron.estado == "COMPLETADO"
+    assert carga_pron.registros_procesados == 840
+    assert carga_pron.detalle_error == f"Regeneración por activación de {m_ret.version}"
+
+    rficha = client.get("/api/v1/modelos/ficha", headers=headers)
+    assert rficha.status_code == 200
+    assert rficha.json()["version"] == "v1.22.0"
+
+
+def test_activar_version_anterior_cambia_realmente_modelo_en_uso(client, admin_token, db_session):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    db_session.query(ModeloVersion).filter(ModeloVersion.estado == "ACTIVA").update({"estado": "ANTERIOR"})
+    db_session.commit()
+
+    m_act = ModeloVersion(
+        version="v1.23.0",
+        fecha_entrenamiento=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=5),
+        motivo_entrenamiento="reentrenamiento_manual",
+        estado="ACTIVA",
+        mae=2.8,
+        mape=11.8,
+        rmse=3.2,
+        mape_14d=10.5,
+        wape=10.2
+    )
+    m_ant = ModeloVersion(
+        version="v1.24.0",
+        fecha_entrenamiento=datetime.now(timezone.utc).replace(tzinfo=None),
+        motivo_entrenamiento="reentrenamiento_manual",
+        estado="ANTERIOR",
+        mae=2.4,
+        mape=10.9,
+        rmse=2.9,
+        mape_14d=9.8,
+        wape=9.5
+    )
+    db_session.add_all([m_act, m_ant])
+    db_session.commit()
+    db_session.refresh(m_act)
+    db_session.refresh(m_ant)
+
+    model_dir = os.path.join(settings.STORAGE_DIR, "modelos")
+    os.makedirs(model_dir, exist_ok=True)
+    m_act_file = os.path.join(model_dir, f"modelo_{m_act.id_modelo}.json")
+    m_ant_file = os.path.join(model_dir, f"modelo_{m_ant.id_modelo}.json")
+
+    with open(m_act_file, "w", encoding="utf-8") as f:
+        f.write('{"modelo": "v1.23.0_modelo"}')
+    with open(m_ant_file, "w", encoding="utf-8") as f:
+        f.write('{"modelo": "v1.24.0_modelo"}')
+    with open(os.path.join(model_dir, "modelo_activo.json"), "w", encoding="utf-8") as f:
+        f.write('{"modelo": "v1.23.0_modelo"}')
+
+    with patch.object(MLForecastService, "generar_pronosticos_lote", return_value=840):
+        resp = client.patch(f"/api/v1/modelos/{m_ant.id_modelo}/activar", headers=headers)
+        assert resp.status_code == 200
+
+    db_session.refresh(m_act)
+    db_session.refresh(m_ant)
+    assert m_act.estado == "ANTERIOR"
+    assert m_ant.estado == "ACTIVA"
+
+    with open(os.path.join(model_dir, "modelo_activo.json"), "r", encoding="utf-8") as f:
+        active_content = f.read()
+    assert "v1.24.0_modelo" in active_content
+    assert "v1.23.0_modelo" not in active_content
+
+    with open(os.path.join(model_dir, "metricas_modelo.json"), "r", encoding="utf-8") as f:
+        mdata = json.load(f)
+    assert mdata["version"] == "v1.24.0"
+
+
+def test_activar_con_archivo_faltante_da_409_sin_cambiar_estados(client, admin_token, db_session):
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    m_sin_archivo = ModeloVersion(
+        version="v1.25.0",
+        fecha_entrenamiento=datetime.now(timezone.utc).replace(tzinfo=None),
+        motivo_entrenamiento="reentrenamiento_manual",
+        estado="ANTERIOR"
+    )
+    db_session.add(m_sin_archivo)
+    db_session.commit()
+    db_session.refresh(m_sin_archivo)
+
+    model_dir = os.path.join(settings.STORAGE_DIR, "modelos")
+    f_path = os.path.join(model_dir, f"modelo_{m_sin_archivo.id_modelo}.json")
+    if os.path.exists(f_path):
+        os.remove(f_path)
+
+    resp = client.patch(f"/api/v1/modelos/{m_sin_archivo.id_modelo}/activar", headers=headers)
+    assert resp.status_code == 409
+    assert "No se encontró el archivo del modelo" in resp.json()["detail"]
+
+    db_session.refresh(m_sin_archivo)
+    assert m_sin_archivo.estado == "ANTERIOR"
+

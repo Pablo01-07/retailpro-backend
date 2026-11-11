@@ -1,4 +1,5 @@
 import os
+import shutil
 import pytest
 from datetime import datetime, date, timedelta
 from app.models.producto import Producto
@@ -41,6 +42,25 @@ def mock_data_env(db_session):
     )
     db_session.add_all([m_activa, m_ant, m_backtest])
     db_session.commit()
+
+    model_dir = os.path.join(settings.STORAGE_DIR, "modelos")
+    os.makedirs(model_dir, exist_ok=True)
+    m_ant_file = os.path.join(model_dir, f"modelo_{m_ant.id_modelo}.json")
+    act_file = os.path.join(model_dir, "modelo_activo.json")
+    backup_act = None
+    if os.path.exists(act_file):
+        with open(act_file, "rb") as f:
+            backup_act = f.read()
+        shutil.copyfile(act_file, m_ant_file)
+    else:
+        import pandas as pd
+        import xgboost as xgb
+        from app.services.ml_service import MLForecastService
+        df_d = pd.DataFrame({c: [0.0] for c in MLForecastService.FEATURE_COLS + ["y_real"]})
+        m_dummy = xgb.XGBRegressor(n_estimators=10, max_depth=3)
+        m_dummy.fit(df_d[MLForecastService.FEATURE_COLS], df_d["y_real"])
+        m_dummy.save_model(m_ant_file)
+        m_dummy.save_model(act_file)
 
     p1 = Producto(
         sku="SKU-ABA-001",
@@ -126,13 +146,22 @@ def mock_data_env(db_session):
     db_session.add_all([v1, v2])
     db_session.commit()
 
-    return {
+    yield {
         "m_activa": m_activa,
         "m_ant": m_ant,
         "m_backtest": m_backtest,
         "p1": p1,
         "p2": p2
     }
+
+    if backup_act is not None:
+        with open(act_file, "wb") as f:
+            f.write(backup_act)
+    if os.path.exists(m_ant_file):
+        try:
+            os.remove(m_ant_file)
+        except Exception:
+            pass
 
 
 def test_activar_modelo_produccion_exitoso(client, admin_token, mock_data_env, db_session):

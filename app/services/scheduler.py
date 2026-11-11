@@ -211,14 +211,15 @@ def tarea_pronostico_diario(db: Optional[Session] = None):
     except Exception as e:
         logger.error(f"[Scheduler] Error en Pronóstico Diario: {e}")
         db.rollback()
+        err_detail = getattr(e, "detail", str(e))
         carga.estado = "FALLIDO"
-        carga.detalle_error = str(e)
+        carga.detalle_error = err_detail
         carga.registros_procesados = 0
         db.commit()
 
         etapas_fallidas = [
             {"etapa": "Carga de variables predictivas", "estado": "exitoso", "timestamp": get_utc_now().isoformat(), "duracion_ms": 150},
-            {"etapa": "Inferencia batch con modelo XGBoost activo", "estado": "fallido", "timestamp": get_utc_now().isoformat(), "duracion_ms": 50, "error": str(e)}
+            {"etapa": "Inferencia batch con modelo XGBoost activo", "estado": "fallido", "timestamp": get_utc_now().isoformat(), "duracion_ms": 50, "error": err_detail}
         ]
         with open(os.path.join(carga_dir, "etapas.json"), "w", encoding="utf-8") as f:
             json.dump(etapas_fallidas, f, indent=4, ensure_ascii=False)
@@ -227,7 +228,7 @@ def tarea_pronostico_diario(db: Optional[Session] = None):
             db=db,
             accion="proceso_batch_pronostico",
             modulo_afectado="procesos",
-            detalle={"id_carga": carga.id_carga, "estado": "FALLIDO", "error": str(e)}
+            detalle={"id_carga": carga.id_carga, "estado": "FALLIDO", "error": err_detail}
         )
         return carga
     finally:

@@ -154,3 +154,16 @@ class DescartarModeloResponse(RetailProBaseModel):
     version: str
     estado: str
     observacion: Optional[str] = None
+
+
+class RetirarModeloRequest(RetailProBaseModel):
+    comentario: str
+
+
+class RetirarModeloResponse(RetailProBaseModel):
+    mensaje: str
+    id_modelo: int
+    version: str
+    estado: str
+    observacion: Optional[str] = None
+

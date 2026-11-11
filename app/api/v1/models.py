@@ -32,7 +32,9 @@ from app.schemas.model import (
     CorteComparacionItem,
     ComparacionModeloResponse,
     PublicarModeloResponse,
-    DescartarModeloResponse
+    DescartarModeloResponse,
+    RetirarModeloRequest,
+    RetirarModeloResponse
 )
 from app.services.ml_service import MLForecastService
 from app.services.reporting_service import ReportingService
@@ -462,11 +464,10 @@ def activar_version_modelo(
     current_admin: Usuario = Depends(require_roles([RoleCode.ADMIN]))
 ):
     """
-    Activa una versión de producción del modelo de machine learning (Pantalla 13).
+    Activa una versión de producción previamente anterior o retirada (Pantalla 13).
     Solo permitido a administradores.
     Rechaza modelos de cortes de backtest con HTTP 400.
-    El modelo activo previo pasa a 'ANTERIOR' y el seleccionado pasa a 'ACTIVA'.
-    Registra el cambio en auditoría conforme a Ley N.° 29733.
+    Restaura los archivos en disco, regenera los pronósticos y recalcula alertas.
     """
     modelo = db.query(ModeloVersion).filter(ModeloVersion.id_modelo == id_modelo).first()
     if not modelo:
@@ -481,30 +482,139 @@ def activar_version_modelo(
             detail="No se puede activar un corte de evaluación backtest. Solo se permite activar versiones completas de producción."
         )
 
+    if modelo.estado == "ACTIVA":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="La versión ya se encuentra activa en producción."
+        )
+
     if modelo.estado in ["DESCARTADA", "CANDIDATA"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"No se puede activar directamente un modelo con estado {modelo.estado}. Debe publicarse a través del flujo de aprobación."
         )
 
-    db.query(ModeloVersion).filter(
+    if modelo.estado not in ["ANTERIOR", "RETIRADA"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Solo se pueden activar modelos con estado ANTERIOR o RETIRADA. El modelo actual tiene estado '{modelo.estado}'."
+        )
+
+    model_dir = os.path.join(settings.STORAGE_DIR, "modelos")
+    os.makedirs(model_dir, exist_ok=True)
+    cand_model_path = os.path.join(model_dir, f"modelo_{modelo.id_modelo}.json")
+    if not os.path.exists(cand_model_path):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"No se encontró el archivo del modelo para la versión {modelo.version}."
+        )
+
+    modelo_previo = db.query(ModeloVersion).filter(
         ModeloVersion.estado == "ACTIVA",
         ModeloVersion.id_modelo != id_modelo
-    ).update({"estado": "ANTERIOR"})
+    ).first()
+    if modelo_previo:
+        modelo_previo.estado = "ANTERIOR"
 
     modelo.estado = "ACTIVA"
+    now_str = datetime.now(ZoneInfo("America/Lima")).strftime("%d/%m/%Y %H:%M")
+    user_name = current_admin.nombre_completo or current_admin.username
+    modelo.observacion = f"Reactivada el {now_str} por {user_name}"[:255]
 
-    audit = Auditoria(
-        id_usuario=current_admin.id_usuario,
+    active_model_path = os.path.join(model_dir, "modelo_activo.json")
+    shutil.copyfile(cand_model_path, active_model_path)
+
+    cand_eval_path = os.path.join(model_dir, f"evaluacion_modelo_{modelo.id_modelo}.json")
+    active_calib_path = os.path.join(model_dir, "calibracion_activa.json")
+    if os.path.exists(cand_eval_path):
+        shutil.copyfile(cand_eval_path, active_calib_path)
+
+    cob_val = 94.72
+    wape_val = float(modelo.wape) if modelo.wape is not None else None
+    if os.path.exists(cand_eval_path):
+        try:
+            with open(cand_eval_path, "r", encoding="utf-8") as f:
+                ed = json.load(f)
+                cob_val = ed.get("cobertura_intervalo_95", ed.get("cobertura_secuencial_fuera_muestra", 94.72))
+                if wape_val is None and "wape" in ed and ed["wape"] is not None:
+                    wape_val = float(ed["wape"])
+        except Exception:
+            pass
+    if wape_val is None:
+        wape_val = ReportingService.calcular_wape_fuera_muestra(db)
+
+    metricas_file = os.path.join(model_dir, "metricas_modelo.json")
+    with open(metricas_file, "w", encoding="utf-8") as f:
+        json.dump({
+            "version": modelo.version,
+            "id_modelo": modelo.id_modelo,
+            "mae": float(modelo.mae) if modelo.mae else None,
+            "mape": float(modelo.mape) if modelo.mape else None,
+            "rmse": float(modelo.rmse) if modelo.rmse else None,
+            "mape_14d": float(modelo.mape_14d) if modelo.mape_14d is not None else None,
+            "wape": wape_val,
+            "cobertura_intervalo_95": cob_val
+        }, f, indent=4, ensure_ascii=False)
+
+    carga_pron = CargaDatos(
+        tipo_carga="pronostico",
+        fecha_ejecucion=get_utc_now(),
+        estado="EN_PROGRESO",
+        registros_procesados=0,
+        registros_rechazados=0,
+        porcentaje_calidad=100.0,
+        detalle_error=f"Regeneración por activación de {modelo.version}"
+    )
+    db.add(carga_pron)
+    db.commit()
+    db.refresh(carga_pron)
+
+    carga_dir = get_storage_carga_dir(carga_pron.id_carga)
+    meta_data = {
+        "id_carga": carga_pron.id_carga,
+        "nombre_archivo": f"proceso_regeneracion_pronostico_{modelo.version}",
+        "nombre_original": f"proceso_regeneracion_pronostico_{modelo.version}",
+        "tamano_bytes": 0,
+        "tipo_carga": "pronostico",
+        "tipo_carga_etiqueta": "Pronóstico de Demanda",
+        "fecha_subida": get_utc_now().strftime("%Y-%m-%dT%H:%M:%SZ")
+    }
+    with open(os.path.join(carga_dir, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump(meta_data, f, indent=4, ensure_ascii=False)
+
+    try:
+        total_pron = MLForecastService.generar_pronosticos_lote(
+            db=db,
+            modelo_activo=modelo,
+            id_carga=carga_pron.id_carga
+        )
+        carga_pron.estado = "COMPLETADO"
+        carga_pron.registros_procesados = total_pron
+        carga_pron.detalle_error = f"Regeneración por activación de {modelo.version}"
+        db.commit()
+    except Exception as e:
+        carga_pron.estado = "FALLIDO"
+        carga_pron.detalle_error = getattr(e, "detail", str(e))
+        db.commit()
+
+    try:
+        from app.services.alert_service import AlertService
+        AlertService.sincronizar_alertas(db=db, notificar=True)
+    except Exception:
+        pass
+
+    create_audit_log(
+        db=db,
         accion="ACTIVACION_MODELO",
         modulo_afectado="modelos",
+        user=current_admin,
         detalle={
-            "id_modelo": id_modelo,
+            "id_modelo": modelo.id_modelo,
             "version": modelo.version,
-            "motivo_entrenamiento": modelo.motivo_entrenamiento
+            "observacion": modelo.observacion
         }
     )
-    db.add(audit)
+
     db.commit()
     db.refresh(modelo)
 
@@ -512,10 +622,11 @@ def activar_version_modelo(
         id_modelo=modelo.id_modelo,
         version=modelo.version,
         fecha_entrenamiento=modelo.fecha_entrenamiento,
-        motivo_entrenamiento=modelo.motivo_entrenamiento,
+        motivo_entrenamiento=modelo.motivo_entrenamiento or "reentrenamiento_manual",
         mae=float(modelo.mae) if modelo.mae else None,
         mape=float(modelo.mape) if modelo.mape else None,
         rmse=float(modelo.rmse) if modelo.rmse else None,
+        wape=wape_val,
         mape_14d=float(modelo.mape_14d) if modelo.mape_14d is not None else None,
         estado=modelo.estado,
         observacion=modelo.observacion
@@ -940,3 +1051,94 @@ def descartar_modelo_candidato(
         estado=candidato.estado,
         observacion=candidato.observacion
     )
+
+
+@router.post("/{id_modelo}/retirar", response_model=RetirarModeloResponse)
+def retirar_modelo_produccion(
+    id_modelo: int,
+    payload: RetirarModeloRequest,
+    db: Session = Depends(get_db),
+    current_admin: Usuario = Depends(require_roles([RoleCode.ADMIN]))
+):
+    """
+    Retira de producción la versión actualmente activa (CP029).
+    Solo rol Administrador y body {comentario} obligatorio.
+    """
+    if not payload.comentario or not payload.comentario.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El comentario de retiro es obligatorio."
+        )
+
+    modelo = db.query(ModeloVersion).filter(ModeloVersion.id_modelo == id_modelo).first()
+    if not modelo:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Modelo con ID {id_modelo} no encontrado."
+        )
+
+    if modelo.estado != "ACTIVA":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Solo se puede retirar la versión con estado ACTIVA. El modelo actual tiene estado '{modelo.estado}'."
+        )
+
+    now_str = datetime.now(ZoneInfo("America/Lima")).strftime("%d/%m/%Y %H:%M")
+    user_name = current_admin.nombre_completo or current_admin.username
+    modelo.observacion = f"Retirada de producción el {now_str} por {user_name}: {payload.comentario.strip()}"[:255]
+    modelo.estado = "RETIRADA"
+
+    model_dir = os.path.join(settings.STORAGE_DIR, "modelos")
+    os.makedirs(model_dir, exist_ok=True)
+    active_model_path = os.path.join(model_dir, "modelo_activo.json")
+    active_calib_path = os.path.join(model_dir, "calibracion_activa.json")
+    metricas_path = os.path.join(model_dir, "metricas_modelo.json")
+
+    cand_model_path = os.path.join(model_dir, f"modelo_{modelo.id_modelo}.json")
+    if os.path.exists(active_model_path):
+        if not os.path.exists(cand_model_path):
+            shutil.copyfile(active_model_path, cand_model_path)
+        try:
+            os.remove(active_model_path)
+        except Exception:
+            pass
+
+    cand_calib_path = os.path.join(model_dir, f"evaluacion_modelo_{modelo.id_modelo}.json")
+    if os.path.exists(active_calib_path):
+        if not os.path.exists(cand_calib_path):
+            shutil.copyfile(active_calib_path, cand_calib_path)
+        try:
+            os.remove(active_calib_path)
+        except Exception:
+            pass
+
+    if os.path.exists(metricas_path):
+        try:
+            os.remove(metricas_path)
+        except Exception:
+            pass
+
+    create_audit_log(
+        db=db,
+        accion="Retiro de modelo de producción",
+        modulo_afectado="modelos",
+        user=current_admin,
+        detalle={
+            "id_modelo": modelo.id_modelo,
+            "version": modelo.version,
+            "comentario": payload.comentario.strip(),
+            "observacion": modelo.observacion
+        }
+    )
+
+    db.commit()
+    db.refresh(modelo)
+
+    return RetirarModeloResponse(
+        mensaje=f"Modelo {modelo.version} retirado de producción. No hay un modelo publicado actualmente.",
+        id_modelo=modelo.id_modelo,
+        version=modelo.version,
+        estado=modelo.estado,
+        observacion=modelo.observacion
+    )
+

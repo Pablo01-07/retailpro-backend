@@ -372,3 +372,21 @@ def get_pronostico_detalle_sku(
         historico_reciente=historico,
         pronostico_disponible=True
     )
+
+
+@router.post("/generar")
+@router.post("/{sku_or_id}/generar")
+@router.post("/{sku_or_id}")
+def generar_pronostico_sku_o_lote(
+    sku_or_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles([RoleCode.ADMIN, RoleCode.ANALYST]))
+):
+    modelo_activo = db.query(ModeloVersion).filter(ModeloVersion.estado == "ACTIVA").first()
+    if not modelo_activo:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No hay un modelo publicado actualmente"
+        )
+    return MLForecastService.generar_pronosticos_lote(db=db, modelo_activo=modelo_activo)
+
