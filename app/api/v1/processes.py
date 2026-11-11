@@ -75,7 +75,9 @@ def list_procesos(
         proxima_ejecucion=get_job_proxima_ejecucion("etl_diario") if etl_activo else None,
         estado_ultima_ejecucion=ult_etl.estado if ult_etl else "PENDIENTE",
         id_ultima_carga=ult_etl.id_carga if ult_etl else None,
-        registros_afectados=ult_etl.registros_procesados if ult_etl else 0
+        registros_afectados=ult_etl.registros_procesados if ult_etl else 0,
+        info=ult_etl.detalle_error if ult_etl else None,
+        detalle_error=ult_etl.detalle_error if ult_etl else None
     )
 
     ult_pron = db.query(CargaDatos).filter(
@@ -94,7 +96,9 @@ def list_procesos(
         proxima_ejecucion=get_job_proxima_ejecucion("pronostico_diario") if pr_activo else None,
         estado_ultima_ejecucion=ult_pron.estado if ult_pron else "PENDIENTE",
         id_ultima_carga=ult_pron.id_carga if ult_pron else None,
-        registros_afectados=ult_pron.registros_procesados if ult_pron else 0
+        registros_afectados=ult_pron.registros_procesados if ult_pron else 0,
+        info=ult_pron.detalle_error if ult_pron else None,
+        detalle_error=ult_pron.detalle_error if ult_pron else None
     )
 
     ult_reent = db.query(CargaDatos).filter(
@@ -120,7 +124,9 @@ def list_procesos(
         proxima_ejecucion=get_job_proxima_ejecucion("reentrenamiento_semanal") if re_activo else None,
         estado_ultima_ejecucion=ult_reent.estado if ult_reent else "PENDIENTE",
         id_ultima_carga=ult_reent.id_carga if ult_reent else None,
-        registros_afectados=ult_reent.registros_procesados if ult_reent else 0
+        registros_afectados=ult_reent.registros_procesados if ult_reent else 0,
+        info=ult_reent.detalle_error if ult_reent else None,
+        detalle_error=ult_reent.detalle_error if ult_reent else None
     )
 
     return [item_etl, item_pron, item_reent]

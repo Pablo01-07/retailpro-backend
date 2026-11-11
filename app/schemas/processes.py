@@ -123,6 +123,8 @@ class ProcesoItemResponse(RetailProBaseModel):
     estado_ultima_ejecucion: str
     id_ultima_carga: Optional[int] = None
     registros_afectados: int = 0
+    info: Optional[str] = None
+    detalle_error: Optional[str] = None
 
 
 class EtapaProcesoItem(RetailProBaseModel):
