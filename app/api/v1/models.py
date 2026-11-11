@@ -695,20 +695,6 @@ def get_comparacion_modelo(
             diferencia=diff_cut
         ))
 
-    cumple_umbral = bool(cand_mape_14d is not None and cand_mape_14d <= umbral_mape)
-    if act_mape_14d is not None and cand_mape_14d is not None:
-        diff_mape = round(cand_mape_14d - act_mape_14d, 4)
-        if abs(diff_mape) < 0.05:
-            comparacion_vigente = "equivalente"
-        elif diff_mape < 0:
-            comparacion_vigente = "mejora"
-        else:
-            comparacion_vigente = "empeora"
-        mejora_vigente = bool(cand_mape_14d < act_mape_14d)
-    else:
-        comparacion_vigente = "mejora" if cumple_umbral else "empeora"
-        mejora_vigente = cumple_umbral
-
     u_eval = candidato.umbral_mape_evaluacion
     if u_eval is None and candidato.observacion:
         match_disc = re.search(r"umbral de\s+([\d\.]+)%", candidato.observacion)
@@ -726,6 +712,20 @@ def get_comparacion_modelo(
                     pass
     if u_eval is None:
         u_eval = umbral_mape
+
+    cumple_umbral = bool(cand_mape_14d is not None and cand_mape_14d <= u_eval)
+    if act_mape_14d is not None and cand_mape_14d is not None:
+        diff_mape = round(cand_mape_14d - act_mape_14d, 4)
+        if abs(diff_mape) < 0.05:
+            comparacion_vigente = "equivalente"
+        elif diff_mape < 0:
+            comparacion_vigente = "mejora"
+        else:
+            comparacion_vigente = "empeora"
+        mejora_vigente = bool(cand_mape_14d < act_mape_14d)
+    else:
+        comparacion_vigente = "mejora" if cumple_umbral else "empeora"
+        mejora_vigente = cumple_umbral
 
     return ComparacionModeloResponse(
         id_candidato=candidato.id_modelo,

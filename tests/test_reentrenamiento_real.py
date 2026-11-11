@@ -540,6 +540,7 @@ def test_notificaciones_usa_umbral_de_evaluacion_de_la_version(client, analyst_t
     resp_comp = client.get(f"/api/v1/modelos/{cand1.id_modelo}/comparacion", headers=headers_ad)
     assert resp_comp.status_code == 200
     assert resp_comp.json()["umbral_mape_evaluacion"] == 10.0
+    assert resp_comp.json()["cumple_umbral"] is False
 
 
 def test_fecha_publicacion_hora_america_lima(client, admin_token, db_session):
@@ -704,3 +705,33 @@ def test_comparacion_vigente_equivalente_mejora_empeora(client, admin_token, db_
     d3 = r3.json()
     assert d3["comparacion_vigente"] == "empeora"
     assert d3["mejora_vigente"] is False
+
+
+def test_comparacion_cumple_umbral_usa_umbral_evaluacion_cuando_actual_es_mayor(client, admin_token, db_session):
+    headers_ad = {"Authorization": f"Bearer {admin_token}"}
+
+    u_mape = db_session.query(UmbralConfiguracion).filter(UmbralConfiguracion.tipo_umbral == "mape_max").first()
+    if u_mape:
+        u_mape.valor = 15.0
+    else:
+        db_session.add(UmbralConfiguracion(tipo_umbral="mape_max", valor=15.0))
+    db_session.commit()
+
+    cand = ModeloVersion(
+        version="v1.14.0",
+        fecha_entrenamiento=datetime.now(timezone.utc).replace(tzinfo=None),
+        motivo_entrenamiento="reentrenamiento_manual",
+        estado="DESCARTADA",
+        mape_14d=10.73,
+        umbral_mape_evaluacion=10.0,
+        observacion="MAPE (demanda 14 días) 10.73% supera el umbral de 10%."
+    )
+    db_session.add(cand)
+    db_session.commit()
+
+    resp = client.get(f"/api/v1/modelos/{cand.id_modelo}/comparacion", headers=headers_ad)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["umbral_mape_evaluacion"] == 10.0
+    assert data["umbral_mape"] == 15.0
+    assert data["cumple_umbral"] is False
