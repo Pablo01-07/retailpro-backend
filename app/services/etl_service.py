@@ -776,6 +776,9 @@ def procesar_registros_validos(
         }
     )
 
+    if carga.tipo_carga == "ventas" and carga.estado in ["COMPLETADO", "CON_ADVERTENCIAS"]:
+        verificar_reentrenamiento_por_acumulacion(db)
+
     return {
         "mensaje": f"Carga {carga.id_carga} consolidada exitosamente.",
         "id_carga": carga.id_carga,
@@ -786,6 +789,57 @@ def procesar_registros_validos(
         "estado": carga.estado,
         "estado_display": get_estado_display(carga.estado, carga.registros_rechazados)
     }
+
+
+def verificar_reentrenamiento_por_acumulacion(db: Session):
+    try:
+        from app.services.scheduler import get_procesos_config
+        from app.models.venta_historica import VentaHistorica
+        from app.services.ml_service import MLForecastService
+        import threading
+
+        if MLForecastService.is_entrenamiento_en_curso():
+            return
+
+        cfg = get_procesos_config()
+        umbral_registros = int(cfg.get("reentrenamiento_umbral_registros", 840))
+
+        calib_file = os.path.join(settings.STORAGE_DIR, "modelos", "calibracion_activa.json")
+        fecha_max = None
+        if os.path.exists(calib_file):
+            try:
+                with open(calib_file, "r", encoding="utf-8") as f:
+                    cdata = json.load(f)
+                    f_str = cdata.get("fecha_max_ventas")
+                    if f_str:
+                        if isinstance(f_str, str):
+                            fecha_max = datetime.fromisoformat(f_str).date()
+            except Exception:
+                pass
+
+        if not fecha_max:
+            return
+
+        nuevos = db.query(func.count(VentaHistorica.id_venta)).filter(
+            VentaHistorica.fecha > fecha_max
+        ).scalar() or 0
+
+        if nuevos >= umbral_registros:
+            def _bg_entrenar():
+                from app.core.database import SessionLocal
+                with SessionLocal() as bg_db:
+                    try:
+                        MLForecastService.entrenar_modelo_candidato(
+                            db=bg_db,
+                            motivo="reentrenamiento_por_datos"
+                        )
+                    except Exception as exc:
+                        logger.error(f"Error en reentrenamiento por acumulación: {exc}")
+
+            t = threading.Thread(target=_bg_entrenar, daemon=True)
+            t.start()
+    except Exception as e:
+        logger.error(f"Error al verificar reentrenamiento por acumulación: {e}")
 
 
 def reintentar_ejecucion_carga(

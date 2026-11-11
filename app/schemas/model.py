@@ -26,6 +26,7 @@ class FichaModeloResponse(RetailProBaseModel):
     cumple_meta: bool = True
     parametros: Dict[str, Any]
     importancia_variables: List[FeatureImportanceItem]
+    observacion: Optional[str] = None
 
 
 class ModeloHistorialItem(RetailProBaseModel):
@@ -39,6 +40,7 @@ class ModeloHistorialItem(RetailProBaseModel):
     wape: Optional[float] = None
     mape_14d: Optional[float] = None
     estado: str
+    observacion: Optional[str] = None
 
 
 class MapeMensualMonitoreoItem(RetailProBaseModel):
@@ -63,10 +65,15 @@ class ModeloMonitoreoResponse(RetailProBaseModel):
     cobertura_intervalo_95: Optional[float] = None
     cobertura_fuera_muestra: Optional[float] = None
     serie_mensual: List[MapeMensualMonitoreoItem]
+    proximo_reentrenamiento_programado: Optional[datetime] = None
 
 
 class EntrenarModeloRequest(RetailProBaseModel):
     motivo: Optional[str] = "reentrenamiento_manual"
+
+
+class EntrenarModeloResponse(RetailProBaseModel):
+    mensaje: str
 
 
 class ReevaluarModeloResponse(RetailProBaseModel):
@@ -80,3 +87,66 @@ class ReevaluarModeloResponse(RetailProBaseModel):
     wape: Optional[float] = None
     cobertura_intervalo_95: Optional[float] = None
     cortes_evaluados: int
+
+
+class DescartarModeloRequest(RetailProBaseModel):
+    comentario: str
+
+
+class MetricasModeloItem(RetailProBaseModel):
+    id_modelo: int
+    version: str
+    estado: str
+    mae: Optional[float] = None
+    mape: Optional[float] = None
+    rmse: Optional[float] = None
+    wape: Optional[float] = None
+    mape_14d: Optional[float] = None
+    cobertura_intervalo_95: Optional[float] = None
+
+
+class DiferenciaMetricasItem(RetailProBaseModel):
+    mape_14d: Optional[float] = None
+    mape: Optional[float] = None
+    mae: Optional[float] = None
+    rmse: Optional[float] = None
+    wape: Optional[float] = None
+    cobertura_intervalo_95: Optional[float] = None
+
+
+class CorteComparacionItem(RetailProBaseModel):
+    corte_idx: int
+    periodo: str
+    mape_14d_candidato: Optional[float] = None
+    mape_14d_activa: Optional[float] = None
+    diferencia: Optional[float] = None
+
+
+class ComparacionModeloResponse(RetailProBaseModel):
+    id_candidato: int
+    version_candidato: str
+    id_activa: Optional[int] = None
+    version_activa: Optional[str] = None
+    candidato: MetricasModeloItem
+    activa: Optional[MetricasModeloItem] = None
+    diferencia: DiferenciaMetricasItem
+    cortes: List[CorteComparacionItem]
+    cumple_umbral: bool
+    mejora_vigente: bool
+    umbral_mape: float = 15.0
+
+
+class PublicarModeloResponse(RetailProBaseModel):
+    mensaje: str
+    id_modelo: int
+    version: str
+    estado: str
+    observacion: Optional[str] = None
+
+
+class DescartarModeloResponse(RetailProBaseModel):
+    mensaje: str
+    id_modelo: int
+    version: str
+    estado: str
+    observacion: Optional[str] = None

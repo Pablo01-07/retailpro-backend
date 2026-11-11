@@ -102,12 +102,19 @@ def list_procesos(
     ).order_by(CargaDatos.id_carga.desc()).first()
 
     re_activo = cfg.get("reentrenamiento_activo", True)
+    re_frec_val = cfg.get("reentrenamiento_frecuencia", "cada_4_semanas")
+    re_dia_val = cfg.get("reentrenamiento_dia", "domingo").capitalize()
+    if re_frec_val == "cada_4_semanas":
+        re_frec_display = f"Cada 4 semanas ({re_dia_val})"
+    else:
+        re_frec_display = f"{re_frec_val.capitalize()} ({re_dia_val})"
+
     item_reent = ProcesoItemResponse(
         id_proceso="reentrenamiento_semanal",
         nombre="Reentrenamiento del Modelo",
         tipo="Entrenamiento XGBoost",
         activo=re_activo,
-        frecuencia=f"{cfg.get('reentrenamiento_frecuencia', 'semanal').capitalize()} ({cfg.get('reentrenamiento_dia', 'domingo').capitalize()})",
+        frecuencia=re_frec_display,
         horario=cfg.get("reentrenamiento_hora", "01:00"),
         ultima_ejecucion=ult_reent.fecha_ejecucion if ult_reent else None,
         proxima_ejecucion=get_job_proxima_ejecucion("reentrenamiento_semanal") if re_activo else None,
@@ -145,6 +152,7 @@ def get_configuracion_procesos(
     if re_dia_sem is None and cfg.get("reentrenamiento_dia"):
         re_dia_sem = NOMBRE_A_NUMERO_DIA.get(cfg.get("reentrenamiento_dia", "domingo").lower(), 6)
     cfg["reentrenamiento_dia_semana"] = re_dia_sem
+    cfg["reentrenamiento_umbral_registros"] = cfg.get("reentrenamiento_umbral_registros", 840)
 
     calidad_min_db = get_calidad_min_threshold(db)
     cfg["calidad_min"] = calidad_min_db
@@ -287,6 +295,7 @@ def patch_configuracion_proceso(
         and patch_data.frecuencia is None
         and patch_data.hora is None
         and patch_data.dia_semana is None
+        and patch_data.reentrenamiento_umbral_registros is None
     ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -296,10 +305,10 @@ def patch_configuracion_proceso(
     frec_nueva = None
     if patch_data.frecuencia is not None:
         frec_candidate = patch_data.frecuencia.lower().strip()
-        if frec_candidate not in ["diario", "semanal", "mensual"]:
+        if frec_candidate not in ["diario", "semanal", "mensual", "cada_4_semanas"]:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Frecuencia '{patch_data.frecuencia}' inválida. Valores permitidos: diario, semanal, mensual."
+                detail=f"Frecuencia '{patch_data.frecuencia}' inválida. Valores permitidos: diario, semanal, mensual, cada_4_semanas."
             )
         frec_nueva = frec_candidate
 
@@ -332,10 +341,10 @@ def patch_configuracion_proceso(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"dia_semana '{patch_data.dia_semana}' inválido. Debe ser un entero entre 0 (lunes) y 6 (domingo)."
             )
-        if frec_efectiva != "semanal":
+        if frec_efectiva not in ["semanal", "cada_4_semanas"]:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"El campo 'dia_semana' solo es válido para procesos con frecuencia 'semanal' (la frecuencia resultante es '{frec_efectiva}')."
+                detail=f"El campo 'dia_semana' solo es válido para procesos con frecuencia 'semanal' o 'cada_4_semanas' (la frecuencia resultante es '{frec_efectiva}')."
             )
         dia_semana_nuevo = patch_data.dia_semana
 
@@ -368,6 +377,13 @@ def patch_configuracion_proceso(
             cambios.append(("dia_semana", val_ant, dia_semana_nuevo))
         cfg[f"{key}_dia_semana"] = dia_semana_nuevo
         cfg[f"{key}_dia"] = dia_nom
+
+    if patch_data.reentrenamiento_umbral_registros is not None:
+        val_ant = cfg.get("reentrenamiento_umbral_registros", 840)
+        val_nue = int(patch_data.reentrenamiento_umbral_registros)
+        if val_ant != val_nue:
+            cambios.append(("reentrenamiento_umbral_registros", val_ant, val_nue))
+        cfg["reentrenamiento_umbral_registros"] = val_nue
 
     save_procesos_config(cfg)
 

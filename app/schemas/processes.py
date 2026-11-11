@@ -10,6 +10,7 @@ class ProcesoConfigPatchRequest(RetailProBaseModel):
     frecuencia: Optional[str] = None
     hora: Optional[str] = None
     dia_semana: Optional[int] = None
+    reentrenamiento_umbral_registros: Optional[int] = None
 
 
 class ProcesoConfigItemResponse(RetailProBaseModel):
@@ -40,11 +41,12 @@ class ProcesoConfigSchema(RetailProBaseModel):
     pronostico_proxima_ejecucion: Optional[datetime.datetime] = None
 
     reentrenamiento_activo: bool = True
-    reentrenamiento_frecuencia: str = "semanal"
+    reentrenamiento_frecuencia: str = "cada_4_semanas"
     reentrenamiento_dia: str = "domingo"
     reentrenamiento_dia_semana: Optional[int] = 6
     reentrenamiento_hora: str = "01:00"
     reentrenamiento_proxima_ejecucion: Optional[datetime.datetime] = None
+    reentrenamiento_umbral_registros: Optional[int] = 840
 
     alertas_notificacion_email: Optional[str] = "alertas@fasretail.com"
     correo_alertas: Optional[str] = "alertas@fasretail.com"

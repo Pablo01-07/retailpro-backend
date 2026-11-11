@@ -7,6 +7,8 @@ from app.core.database import get_db
 from app.core.dependencies import get_current_admin, get_current_user
 from app.models.usuario import Usuario
 from app.models.carga_datos import CargaDatos
+from app.models.modelo_version import ModeloVersion
+from app.models.umbral_configuracion import UmbralConfiguracion
 from app.services.scheduler import get_procesos_config
 from app.services.email_service import EmailService, parse_emails_destinatarios
 from app.services.alert_service import AlertService
@@ -65,7 +67,82 @@ def get_notificaciones_cargas(
             mensaje=msg
         ))
 
-    return resultado
+    modelos_candidatos = db.query(ModeloVersion).filter(
+        ModeloVersion.motivo_entrenamiento.like("reentrenamiento_%"),
+        ModeloVersion.estado.in_(["APTA", "DESCARTADA"])
+    ).order_by(ModeloVersion.fecha_entrenamiento.desc()).limit(limite).all()
+
+    u_mape = db.query(UmbralConfiguracion).filter(UmbralConfiguracion.tipo_umbral == "mape_max").first()
+    umbral_mape = float(u_mape.valor) if u_mape else 15.0
+
+    for m in modelos_candidatos:
+        mape_14d_val = float(m.mape_14d) if m.mape_14d is not None else (float(m.mape) if m.mape is not None else 0.0)
+        x_num = int(mape_14d_val) if float(mape_14d_val).is_integer() else mape_14d_val
+        u_num = int(umbral_mape) if float(umbral_mape).is_integer() else umbral_mape
+
+        if m.estado == "DESCARTADA":
+            tipo_n = "advertencia"
+            msg = f"Modelo candidato {m.version} descartado: MAPE (demanda 14 días) {x_num}% supera el umbral de {u_num}%."
+        else:
+            tipo_n = "exito"
+            msg = f"Modelo candidato {m.version} apto: pendiente de aprobación para publicación."
+
+        resultado.append(NotificacionCargaItem(
+            id_carga=m.id_modelo,
+            tipo_carga="entrenamiento",
+            tipo_carga_etiqueta="Modelo de Pronóstico",
+            fecha_ejecucion=m.fecha_entrenamiento,
+            registros_procesados=0,
+            porcentaje_calidad=100.0,
+            umbral_calidad=umbral_mape,
+            tipo_notificacion=tipo_n,
+            mensaje=msg
+        ))
+
+    resultado.sort(key=lambda x: x.fecha_ejecucion, reverse=True)
+    return resultado[:limite]
+
+
+@router.get("/modelos", response_model=List[NotificacionCargaItem])
+def get_notificaciones_modelos(
+    limite: int = Query(10, ge=1, le=100, description="Cantidad máxima de notificaciones a retornar"),
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user)
+):
+    modelos_candidatos = db.query(ModeloVersion).filter(
+        ModeloVersion.motivo_entrenamiento.like("reentrenamiento_%"),
+        ModeloVersion.estado.in_(["APTA", "DESCARTADA"])
+    ).order_by(ModeloVersion.fecha_entrenamiento.desc()).limit(limite).all()
+
+    u_mape = db.query(UmbralConfiguracion).filter(UmbralConfiguracion.tipo_umbral == "mape_max").first()
+    umbral_mape = float(u_mape.valor) if u_mape else 15.0
+
+    resultado = []
+    for m in modelos_candidatos:
+        mape_14d_val = float(m.mape_14d) if m.mape_14d is not None else (float(m.mape) if m.mape is not None else 0.0)
+        x_num = int(mape_14d_val) if float(mape_14d_val).is_integer() else mape_14d_val
+        u_num = int(umbral_mape) if float(umbral_mape).is_integer() else umbral_mape
+
+        if m.estado == "DESCARTADA":
+            tipo_n = "advertencia"
+            msg = f"Modelo candidato {m.version} descartado: MAPE (demanda 14 días) {x_num}% supera el umbral de {u_num}%."
+        else:
+            tipo_n = "exito"
+            msg = f"Modelo candidato {m.version} apto: pendiente de aprobación para publicación."
+
+        resultado.append(NotificacionCargaItem(
+            id_carga=m.id_modelo,
+            tipo_carga="entrenamiento",
+            tipo_carga_etiqueta="Modelo de Pronóstico",
+            fecha_ejecucion=m.fecha_entrenamiento,
+            registros_procesados=0,
+            porcentaje_calidad=100.0,
+            umbral_calidad=umbral_mape,
+            tipo_notificacion=tipo_n,
+            mensaje=msg
+        ))
+    resultado.sort(key=lambda x: x.fecha_ejecucion, reverse=True)
+    return resultado[:limite]
 
 
 class ResumenAlertasRequest(BaseModel):

@@ -1,10 +1,11 @@
 import os
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -76,7 +77,7 @@ PROCESOS_METADATA = {
         "key": "reentrenamiento",
         "nombre": "Reentrenamiento del Modelo",
         "tipo": "Entrenamiento XGBoost",
-        "default_frec": "semanal",
+        "default_frec": "cada_4_semanas",
         "default_hora": "01:00",
         "default_dia": "domingo",
         "default_dia_semana": 6
@@ -93,7 +94,10 @@ def get_procesos_config() -> Dict[str, Any]:
     if os.path.exists(config_path):
         try:
             with open(config_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                cfg = json.load(f)
+                cfg.setdefault("reentrenamiento_frecuencia", "cada_4_semanas")
+                cfg.setdefault("reentrenamiento_umbral_registros", 840)
+                return cfg
         except Exception as e:
             logger.error(f"Error al leer {config_path}: {e}")
 
@@ -105,10 +109,11 @@ def get_procesos_config() -> Dict[str, Any]:
         "pronostico_frecuencia": "diario",
         "pronostico_hora": "04:00",
         "reentrenamiento_activo": True,
-        "reentrenamiento_frecuencia": "semanal",
+        "reentrenamiento_frecuencia": "cada_4_semanas",
         "reentrenamiento_dia": "domingo",
         "reentrenamiento_dia_semana": 6,
         "reentrenamiento_hora": "01:00",
+        "reentrenamiento_umbral_registros": 840,
         "alertas_notificacion_email": "alertas@fasretail.com",
         "notificar_quiebre": True,
         "notificar_sobrestock": True,
@@ -231,7 +236,7 @@ def tarea_pronostico_diario(db: Optional[Session] = None):
 
 
 def tarea_reentrenamiento_semanal(db: Optional[Session] = None):
-    logger.info("[Scheduler] Iniciando tarea programada: Reentrenamiento Semanal")
+    logger.info("[Scheduler] Iniciando tarea programada: Reentrenamiento")
     close_db = False
     if db is None:
         db = SessionLocal()
@@ -263,35 +268,36 @@ def tarea_reentrenamiento_semanal(db: Optional[Session] = None):
         with open(os.path.join(carga_dir, "meta.json"), "w", encoding="utf-8") as f:
             json.dump(meta_data, f, indent=4, ensure_ascii=False)
 
-        etapas = [
-            {"etapa": "Extracción de ventas históricas actualizadas", "estado": "exitoso", "timestamp": get_utc_now().isoformat(), "duracion_ms": 320},
-            {"etapa": "Ingeniería de características (lags, medias móviles, calendario)", "estado": "exitoso", "timestamp": get_utc_now().isoformat(), "duracion_ms": 840},
-            {"etapa": "Ajuste de hiperparámetros y entrenamiento XGBoost", "estado": "exitoso", "timestamp": get_utc_now().isoformat(), "duracion_ms": 2400},
-            {"etapa": "Evaluación walk-forward y comparación con modelo actual", "estado": "exitoso", "timestamp": get_utc_now().isoformat(), "duracion_ms": 610}
-        ]
-        with open(os.path.join(carga_dir, "etapas.json"), "w", encoding="utf-8") as f:
-            json.dump(etapas, f, indent=4, ensure_ascii=False)
-
-        carga.estado = "COMPLETADO"
-        db.commit()
+        from app.services.ml_service import MLForecastService
+        res = MLForecastService.entrenar_modelo_candidato(
+            db=db,
+            motivo="reentrenamiento_programado",
+            id_carga=carga.id_carga
+        )
 
         create_audit_log(
             db=db,
             accion="proceso_batch_reentrenamiento",
             modulo_afectado="procesos",
-            detalle={"id_carga": carga.id_carga, "estado": "COMPLETADO"}
+            detalle={"id_carga": carga.id_carga, "estado": "COMPLETADO", "id_modelo": res.get("id_modelo")}
         )
         logger.info(f"[Scheduler] Reentrenamiento registrado exitosamente (Carga {carga.id_carga}).")
         return carga
     except Exception as e:
         logger.error(f"[Scheduler] Error en Reentrenamiento: {e}")
         db.rollback()
-        carga.estado = "FALLIDO"
-        carga.detalle_error = str(e)
-        db.commit()
-        raise e
-        logger.error(f"[Scheduler] Error en Reentrenamiento: {e}")
-        raise e
+        if 'carga' in locals() and carga:
+            carga.estado = "FALLIDO"
+            carga.detalle_error = str(e)
+            db.commit()
+            create_audit_log(
+                db=db,
+                accion="proceso_batch_reentrenamiento",
+                modulo_afectado="procesos",
+                detalle={"id_carga": carga.id_carga, "estado": "FALLIDO", "error": str(e)}
+            )
+            return carga
+        return None
     finally:
         if close_db:
             db.close()
@@ -302,7 +308,7 @@ def construir_trigger_proceso(
     hora_str: str,
     dia_str: Optional[str] = None,
     dia_semana: Optional[int] = None
-) -> CronTrigger:
+):
     try:
         h, m = [int(x) for x in hora_str.split(":")]
     except Exception:
@@ -319,6 +325,20 @@ def construir_trigger_proceso(
         elif dia_str:
             cron_day = DIAS_CRON_MAP.get(dia_str.lower().strip(), "sun")
         return CronTrigger(day_of_week=cron_day, hour=h, minute=m, timezone="America/Lima")
+    elif frec_norm == "cada_4_semanas":
+        target_dow = 6
+        if dia_semana is not None and 0 <= dia_semana <= 6:
+            target_dow = dia_semana
+        elif dia_str:
+            target_dow = NOMBRE_A_NUMERO_DIA.get(dia_str.lower().strip(), 6)
+        import zoneinfo
+        tz = zoneinfo.ZoneInfo("America/Lima")
+        now_lima = datetime.now(tz)
+        days_ahead = (target_dow - now_lima.weekday()) % 7
+        cand = now_lima.replace(hour=h, minute=m, second=0, microsecond=0) + timedelta(days=days_ahead)
+        if cand <= now_lima:
+            cand = cand + timedelta(days=7)
+        return IntervalTrigger(weeks=4, start_date=cand, timezone="America/Lima")
     elif frec_norm == "mensual":
         return CronTrigger(day=1, hour=h, minute=m, timezone="America/Lima")
     else:
@@ -485,10 +505,19 @@ def ejecutar_proceso_manual(db: Session, tipo_proceso: str, user_id: Optional[in
         }
     elif tipo_proceso == "reentrenamiento":
         carga = tarea_reentrenamiento_semanal(db=db)
+        if carga and carga.estado == "FALLIDO":
+            return {
+                "mensaje": f"Reentrenamiento fallido: {carga.detalle_error}",
+                "tipo_proceso": "reentrenamiento",
+                "id_carga": carga.id_carga,
+                "estado": "FALLIDO",
+                "error": carga.detalle_error
+            }
         return {
             "mensaje": "Reentrenamiento semanal ejecutado exitosamente.",
             "tipo_proceso": "reentrenamiento",
-            "id_carga": carga.id_carga
+            "id_carga": carga.id_carga if carga else None,
+            "estado": "COMPLETADO"
         }
     else:
         raise ValueError(f"Tipo de proceso '{tipo_proceso}' no válido. Opciones: etl, pronostico, reentrenamiento")

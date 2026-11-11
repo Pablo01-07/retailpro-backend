@@ -2,12 +2,14 @@ import os
 import time
 import math
 import json
+import threading
 from datetime import datetime, date, timedelta
 from typing import Dict, List, Any, Tuple, Optional, Set
 import numpy as np
 import pandas as pd
 import xgboost as xgb
 import shap
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import select, update, desc, func
 
@@ -17,6 +19,7 @@ from app.models.venta_historica import VentaHistorica
 from app.models.modelo_version import ModeloVersion
 from app.models.pronostico import Pronostico
 from app.models.umbral_configuracion import UmbralConfiguracion
+from app.models.carga_datos import CargaDatos
 from app.services.etl_service import get_storage_carga_dir, get_utc_now
 
 FERIADOS_LIMA = {
@@ -209,6 +212,14 @@ class MLForecastService:
                 if (max_f - min_prod_map[pid]).days < settings.MIN_HISTORIAL_DIAS:
                     ids_insuf.add(pid)
         return ids_insuf
+
+    _lock_entrenamiento = threading.Lock()
+    _entrenamiento_en_curso = False
+
+    @classmethod
+    def is_entrenamiento_en_curso(cls) -> bool:
+        with cls._lock_entrenamiento:
+            return cls._entrenamiento_en_curso
 
     FEATURE_COLS = [
         "lag_1", "lag_2", "lag_3", "lag_7", "lag_14", "lag_21", "lag_28",
@@ -881,7 +892,9 @@ class MLForecastService:
                 "percentiles_relativos": percentiles_relativos,
                 "residuos_rel_acum_cat": residuos_rel_acum_cat,
                 "cobertura_secuencial_fuera_muestra": cob_oos,
-                "mape_14d": out_of_sample_metrics.get("mape_14d")
+                "cobertura_intervalo_95": cob_oos,
+                "mape_14d": out_of_sample_metrics.get("mape_14d"),
+                "fecha_max_ventas": max_date.isoformat()
             }, f, indent=4, ensure_ascii=False)
 
         with open(os.path.join(settings.STORAGE_DIR, "modelos", "metricas_modelo.json"), "w", encoding="utf-8") as f:
@@ -1043,6 +1056,235 @@ class MLForecastService:
             "importancia_variables": feature_importance_list,
             "resumen_cobertura": resumen_cobertura
         }
+
+    @classmethod
+    def entrenar_modelo_candidato(
+        cls,
+        db: Session,
+        motivo: str = "reentrenamiento_manual",
+        id_carga: Optional[int] = None
+    ) -> Dict[str, Any]:
+        with cls._lock_entrenamiento:
+            if cls._entrenamiento_en_curso:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Ya existe un reentrenamiento en ejecución."
+                )
+            cls._entrenamiento_en_curso = True
+
+        etapas = []
+        t_global_start = time.time()
+        try:
+            t0 = time.time()
+            df_grid, prod_dict, sku_to_idx, cat_to_idx = cls.load_clean_sales_grid(db)
+            if df_grid.empty:
+                raise ValueError("No se encontraron registros de ventas históricas limpias para el reentrenamiento.")
+            duracion_carga = max(1, int((time.time() - t0) * 1000))
+            max_date = df_grid["fecha"].max()
+            etapas.append({
+                "etapa": "Carga de datos de ventas limpias",
+                "estado": "exitoso",
+                "timestamp": get_utc_now().isoformat(),
+                "duracion_ms": duracion_carga,
+                "detalle": f"{len(df_grid)} registros de ventas cargados hasta {max_date.isoformat()}"
+            })
+
+            t1 = time.time()
+            backtest_results, res_acum_cat, percentiles_rel, comp_baselines, cob_empirica = cls.run_walk_forward_backtest(
+                db, df_grid, prod_dict
+            )
+            duracion_backtest = max(1, int((time.time() - t1) * 1000))
+
+            mapes = [r["mape"] for r in backtest_results]
+            rmses = [r["rmse"] for r in backtest_results]
+            maes = [r["mae"] for r in backtest_results]
+            wapes = [r["wape"] for r in backtest_results]
+            mapes_14d = [r["mape_14d"] for r in backtest_results if "mape_14d" in r and r["mape_14d"] is not None]
+
+            avg_mape = round(sum(mapes) / len(mapes), 2) if mapes else 0.0
+            avg_rmse = round(sum(rmses) / len(rmses), 4) if rmses else 0.0
+            avg_mae = round(sum(maes) / len(maes), 4) if maes else 0.0
+            avg_wape = round(sum(wapes) / len(wapes), 2) if wapes else 0.0
+            avg_mape_14d = round(sum(mapes_14d) / len(mapes_14d), 2) if mapes_14d else 0.0
+
+            etapas.append({
+                "etapa": "Validación temporal Walk-Forward (12 cortes)",
+                "estado": "exitoso",
+                "timestamp": get_utc_now().isoformat(),
+                "duracion_ms": duracion_backtest,
+                "detalle": f"12 cortes evaluados. MAPE 14d promedio: {avg_mape_14d}%, WAPE: {avg_wape}%, Cobertura IC: {cob_empirica}%"
+            })
+
+            t2 = time.time()
+            df_train_full = cls.generate_training_matrix(df_grid, end_date=max_date, sample_step_days=7)
+            X_train_full = df_train_full[cls.FEATURE_COLS]
+            y_train_full = df_train_full["y_real"]
+
+            candidate_model = xgb.XGBRegressor(
+                n_estimators=120,
+                max_depth=5,
+                learning_rate=0.08,
+                subsample=0.85,
+                colsample_bytree=0.85,
+                random_state=42,
+                n_jobs=1
+            )
+            candidate_model.fit(X_train_full, y_train_full)
+            duracion_train = max(1, int((time.time() - t2) * 1000))
+
+            etapas.append({
+                "etapa": "Entrenamiento final del modelo candidato",
+                "estado": "exitoso",
+                "timestamp": get_utc_now().isoformat(),
+                "duracion_ms": duracion_train,
+                "detalle": f"Modelo XGBoost entrenado con matriz de {len(df_train_full)} observaciones"
+            })
+
+            modelo_activo = db.query(ModeloVersion).filter(ModeloVersion.estado == "ACTIVA").first()
+            major_base = 1
+            if modelo_activo and modelo_activo.version.startswith("v"):
+                try:
+                    parts = modelo_activo.version.lstrip("v").split(".")
+                    major_base = int(parts[0])
+                except Exception:
+                    major_base = 1
+
+            versiones_existentes = db.query(ModeloVersion.version).all()
+            versiones_set = set(v[0] for v in versiones_existentes)
+
+            max_minor = 0
+            prefix = f"v{major_base}."
+            for v_str in versiones_set:
+                if v_str.startswith(prefix):
+                    sub = v_str[len(prefix):]
+                    p = sub.split(".")
+                    if len(p) >= 1 and p[0].isdigit():
+                        minor_val = int(p[0])
+                        if minor_val > max_minor:
+                            max_minor = minor_val
+
+            candidate_minor = max_minor + 1
+            nueva_version = f"v{major_base}.{candidate_minor}.0"
+            while nueva_version in versiones_set:
+                candidate_minor += 1
+                nueva_version = f"v{major_base}.{candidate_minor}.0"
+
+            mv_cand = ModeloVersion(
+                version=nueva_version,
+                fecha_entrenamiento=get_utc_now(),
+                motivo_entrenamiento=motivo,
+                mae=avg_mae,
+                mape=avg_mape,
+                rmse=avg_rmse,
+                mape_14d=avg_mape_14d,
+                estado="CANDIDATA"
+            )
+            db.add(mv_cand)
+            db.commit()
+            db.refresh(mv_cand)
+
+            model_dir = os.path.join(settings.STORAGE_DIR, "modelos")
+            os.makedirs(model_dir, exist_ok=True)
+            cand_model_path = os.path.join(model_dir, f"modelo_{mv_cand.id_modelo}.json")
+            candidate_model.save_model(cand_model_path)
+
+            eval_artifact = {
+                "id_modelo": mv_cand.id_modelo,
+                "version": mv_cand.version,
+                "motivo_entrenamiento": motivo,
+                "mae": avg_mae,
+                "mape": avg_mape,
+                "rmse": avg_rmse,
+                "wape": avg_wape,
+                "mape_14d": avg_mape_14d,
+                "cobertura_intervalo_95": cob_empirica,
+                "cobertura_secuencial_fuera_muestra": cob_empirica,
+                "fecha_max_ventas": max_date.isoformat(),
+                "percentiles_relativos": percentiles_rel,
+                "residuos_rel_acum_cat": res_acum_cat,
+                "backtest_results": backtest_results,
+                "comparativa_lineas_base": comp_baselines
+            }
+            eval_path = os.path.join(model_dir, f"evaluacion_modelo_{mv_cand.id_modelo}.json")
+            with open(eval_path, "w", encoding="utf-8") as f:
+                json.dump(eval_artifact, f, indent=4, ensure_ascii=False)
+
+            t3 = time.time()
+            u_mape = db.query(UmbralConfiguracion).filter(UmbralConfiguracion.tipo_umbral == "mape_max").first()
+            umbral_mape = float(u_mape.valor) if u_mape else 15.0
+
+            x_num = int(avg_mape_14d) if float(avg_mape_14d).is_integer() else avg_mape_14d
+            u_num = int(umbral_mape) if float(umbral_mape).is_integer() else umbral_mape
+
+            version_vigente = modelo_activo.version if modelo_activo else "vigente"
+
+            if avg_mape_14d > umbral_mape:
+                mv_cand.estado = "DESCARTADA"
+                mv_cand.observacion = f"MAPE (demanda 14 días) {x_num}% supera el umbral de {u_num}%. Se mantiene la versión {version_vigente} en producción."
+            else:
+                mv_cand.estado = "APTA"
+                mv_cand.observacion = f"Cumple el umbral ({x_num}% ≤ {u_num}%). Pendiente de aprobación para publicación."
+
+            db.commit()
+            db.refresh(mv_cand)
+
+            duracion_eval = max(1, int((time.time() - t3) * 1000))
+            etapas.append({
+                "etapa": "Evaluación contra umbrales de precisión",
+                "estado": "exitoso",
+                "timestamp": get_utc_now().isoformat(),
+                "duracion_ms": duracion_eval,
+                "detalle": f"Resultado: {mv_cand.estado}. Observación: {mv_cand.observacion}"
+            })
+
+            if id_carga:
+                carga = db.query(CargaDatos).filter(CargaDatos.id_carga == id_carga).first()
+                if carga:
+                    carga.estado = "COMPLETADO"
+                    carga.registros_procesados = len(df_train_full)
+                    carga.detalle_error = f"Modelo candidato {mv_cand.version} generado: {mv_cand.estado} (MAPE 14d: {avg_mape_14d}%)"
+                    db.commit()
+                carga_dir = get_storage_carga_dir(id_carga)
+                with open(os.path.join(carga_dir, "etapas.json"), "w", encoding="utf-8") as f:
+                    json.dump(etapas, f, indent=4, ensure_ascii=False)
+
+            total_s = round(time.time() - t_global_start, 2)
+            return {
+                "id_modelo": mv_cand.id_modelo,
+                "version": mv_cand.version,
+                "estado": mv_cand.estado,
+                "observacion": mv_cand.observacion,
+                "mae": avg_mae,
+                "mape": avg_mape,
+                "rmse": avg_rmse,
+                "wape": avg_wape,
+                "mape_14d": avg_mape_14d,
+                "cobertura_intervalo_95": cob_empirica,
+                "fecha_max_ventas": max_date.isoformat(),
+                "duracion_segundos": total_s,
+                "etapas": etapas
+            }
+        except Exception as e:
+            if id_carga:
+                carga = db.query(CargaDatos).filter(CargaDatos.id_carga == id_carga).first()
+                if carga:
+                    carga.estado = "FALLIDO"
+                    carga.detalle_error = str(e)
+                    db.commit()
+                etapas.append({
+                    "etapa": "Fallo en ejecución de reentrenamiento",
+                    "estado": "fallido",
+                    "timestamp": get_utc_now().isoformat(),
+                    "duracion_ms": 1,
+                    "error": str(e)
+                })
+                carga_dir = get_storage_carga_dir(id_carga)
+                with open(os.path.join(carga_dir, "etapas.json"), "w", encoding="utf-8") as f:
+                    json.dump(etapas, f, indent=4, ensure_ascii=False)
+            raise e
+        finally:
+            with cls._lock_entrenamiento:
+                cls._entrenamiento_en_curso = False
 
     @classmethod
     def generar_pronosticos_lote(

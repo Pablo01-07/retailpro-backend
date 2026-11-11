@@ -16,5 +16,6 @@ class ModeloVersion(Base):
     rmse = Column(Numeric(8, 4), nullable=True)
     mape_14d = Column(Numeric(5, 2), nullable=True)
     estado = Column(String(20), nullable=False)
+    observacion = Column(String(255), nullable=True)
 
     pronosticos = relationship("Pronostico", back_populates="modelo", cascade="all, delete-orphan")
